@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Promo Tracker</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <div class="app" id="app">
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="logo">
+        <span class="logo-icon" aria-hidden="true">🍔</span>
+        <span class="logo-text">Promo Tracker</span>
+      </div>
+
+      <nav class="nav" aria-label="Sections">
+        <a href="#overview" class="nav-item active" data-section="overview" aria-current="page">
+          <span class="nav-icon" aria-hidden="true">📊</span> Dashboard
+        </a>
+        <a href="#queue" class="nav-item" data-section="queue">
+          <span class="nav-icon" aria-hidden="true">📋</span> Queue
+          <span class="badge" id="queue-badge" hidden></span>
+        </a>
+        <a href="#results" class="nav-item" data-section="results">
+          <span class="nav-icon" aria-hidden="true">✅</span> Results
+        </a>
+        <a href="#log" class="nav-item" data-section="log">
+          <span class="nav-icon" aria-hidden="true">📜</span> Activity Log
+        </a>
+        <a href="#settings" class="nav-item" data-section="settings">
+          <span class="nav-icon" aria-hidden="true">⚙️</span> Settings
+        </a>
+      </nav>
+
+      <div class="sidebar-actions">
+        <button type="button" class="btn btn-primary" id="btn-reddit" data-action="run-reddit">
+          <span aria-hidden="true">🔍</span> <span class="btn-text">Check Sources</span>
+        </button>
+        <div class="last-run-label" id="last-reddit-run"></div>
+        <button type="button" class="btn btn-secondary" id="btn-apply" data-action="run-apply">
+          <span aria-hidden="true">⚡</span> <span class="btn-text">Apply Codes</span>
+        </button>
+        <div class="last-run-label" id="last-apply-run"></div>
+      </div>
+
+      <div class="status-indicator">
+        <span class="status-dot" id="status-dot"></span>
+        <span class="status-text" id="status-text">Connecting…</span>
+      </div>
+
+      <button type="button" class="btn-restart" data-action="restart">↺ Restart Server</button>
+      <button type="button" class="btn-quit" data-action="quit">⏹ Quit App</button>
+    </aside>
+
+    <!-- Dimmed backdrop behind the slide-out sidebar (phones only) -->
+    <div class="sidebar-backdrop" id="sidebar-backdrop" data-action="close-sidebar"></div>
+
+    <!-- Main content -->
+    <main class="main" id="main">
+
+      <!-- Mobile top bar with hamburger (phones only) -->
+      <div class="mobile-topbar">
+        <button type="button" class="nav-toggle" id="nav-toggle" data-action="toggle-sidebar"
+                aria-label="Menu" aria-expanded="false" aria-controls="sidebar">☰</button>
+        <span class="mobile-title"><span class="logo-icon" aria-hidden="true">🍔</span> Promo Tracker</span>
+      </div>
+
+      <!-- Health warning banner (set when detection looks broken) -->
+      <div class="health-banner" id="health-banner" role="alert" hidden>
+        <span class="health-banner-icon" aria-hidden="true">⚠️</span>
+        <div class="health-banner-text">
+          <strong>Something looks wrong</strong>
+          <span id="health-banner-msg"></span>
+        </div>
+        <button type="button" class="health-banner-dismiss" data-action="dismiss-health"
+                title="Dismiss" aria-label="Dismiss warning">×</button>
+      </div>
+
+      <!-- Session-expired banners (apply can't work without a valid login) -->
+      <div class="health-banner login-warning" id="login-banner" hidden>
+        <span class="health-banner-icon" aria-hidden="true">🔑</span>
+        <div class="health-banner-text">
+          <strong>Postmates session expired</strong>
+          <span>The app pressed Log in for you, but Uber asked for your password — so codes can't be applied until you sign in. One click opens Chrome on the Mac running Promo Tracker.</span>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="login" data-target="postmates" data-variant="banner">🔐 Log in</button>
+      </div>
+
+      <div class="health-banner login-warning" id="ue-login-banner" hidden>
+        <span class="health-banner-icon" aria-hidden="true">🔑</span>
+        <div class="health-banner-text">
+          <strong>Uber Eats session expired</strong>
+          <span>The app pressed Log in for you, but Uber asked for your password. Codes Postmates rejects are held and retried on Uber Eats automatically once you sign in — one click opens Chrome on the Mac running Promo Tracker.</span>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="login" data-target="ubereats" data-variant="banner">🔐 Log in</button>
+      </div>
+
+      <!-- Setup checklist (auto-hides when all required steps are done) -->
+      <div id="setup-checklist" hidden>
+        <div class="setup-header">
+          <span class="setup-title">⚙️ Setup</span>
+          <span class="setup-subtitle" id="setup-subtitle"></span>
+        </div>
+        <div class="setup-steps" id="setup-steps"></div>
+      </div>
+
+      <!-- Overview -->
+      <section id="section-overview" class="section active" aria-labelledby="h-overview">
+        <div class="section-header">
+          <h1 id="h-overview" tabindex="-1">Dashboard</h1>
+          <div class="thread-badge" id="thread-badge">No thread loaded</div>
+        </div>
+
+        <div class="scan-status-bar" id="scan-status-bar">
+          <div class="scan-pill">
+            <span class="scan-dot" id="scan-dot"></span>
+            <span id="scan-label">Loading…</span>
+          </div>
+          <div class="scan-meta" id="scan-meta"></div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card stat-saved">
+            <div class="stat-value" id="stat-saved">$0</div>
+            <div class="stat-label">Saved This Month</div>
+            <div class="stat-sublabel" id="stat-saved-sub">no codes yet</div>
+          </div>
+          <div class="stat-card stat-success">
+            <div class="stat-value" id="stat-success">0</div>
+            <div class="stat-label">Codes Applied</div>
+            <div class="stat-sublabel">this month</div>
+          </div>
+          <div class="stat-card stat-queue">
+            <div class="stat-value" id="stat-queue">0</div>
+            <div class="stat-label">In Queue</div>
+            <div class="stat-sublabel">waiting to try</div>
+          </div>
+          <div class="stat-card stat-tried">
+            <div class="stat-value" id="stat-tried">0</div>
+            <div class="stat-label">Tried</div>
+            <div class="stat-sublabel">total this month</div>
+          </div>
+        </div>
+
+        <div class="cards-row">
+          <div class="card">
+            <div class="card-header">
+              <h3>Successful Codes</h3>
+              <span class="card-badge success-badge" id="success-count">0</span>
+            </div>
+            <div class="success-list" id="success-list">
+              <div class="empty-state">No successful codes yet this month</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3>Recent Activity</h3>
+            </div>
+            <div class="activity-feed" id="activity-feed">
+              <div class="empty-state">No activity yet</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="region-locked-card" hidden>
+          <div class="card-header">
+            <h3>Worked, but region-locked</h3>
+            <span class="card-badge region-locked-badge" id="region-locked-count">0</span>
+          </div>
+          <div class="region-locked-note">
+            These applied but are locked to another area — <strong>not counted toward your total</strong>.
+          </div>
+          <div class="region-list" id="region-list"></div>
+        </div>
+
+        <div class="card" id="savings-graph-card" hidden>
+          <div class="card-header">
+            <h3>Savings by Month</h3>
+            <span class="card-badge" id="savings-graph-total"></span>
+          </div>
+          <div class="savings-graph" id="savings-graph"></div>
+        </div>
+
+        <div class="card" id="thread-status-card" hidden>
+          <div class="card-header">
+            <h3>This Month's Thread</h3>
+            <span class="card-badge" id="thread-status-month"></span>
+          </div>
+          <div class="thread-status-list" id="thread-status-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Monitored Sources</h3>
+            <span class="card-badge" id="sources-count">0 active</span>
+          </div>
+          <div class="sources-list" id="sources-list">
+            <div class="empty-state">Source status will appear after the first scan</div>
+          </div>
+        </div>
+
+        <div class="card" id="live-status-card" hidden>
+          <div class="card-header" id="live-header">
+            <h3>Live Progress</h3>
+            <span class="spinner"></span>
+          </div>
+          <div class="live-log" id="live-log"></div>
+        </div>
+      </section>
+
+      <!-- Queue -->
+      <section id="section-queue" class="section" aria-labelledby="h-queue">
+        <div class="section-header">
+          <h1 id="h-queue" tabindex="-1">Code Queue</h1>
+          <form class="add-code-form" data-action="add-code" autocomplete="off">
+            <label for="add-code-input" class="visually-hidden">Promo code to add</label>
+            <input type="text" id="add-code-input" placeholder="Add code manually…" class="code-input"
+                   autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="40">
+            <button type="submit" class="btn btn-primary">Add</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Pending Codes</h3>
+            <span class="card-badge" id="pending-count">0 codes</span>
+          </div>
+          <div class="queue-hint" id="queue-hint" hidden></div>
+          <div class="queue-list" id="queue-list">
+            <div class="empty-state">Queue is empty — run a source scan to find codes</div>
+          </div>
+        </div>
+
+        <div class="card" id="already-applied-card" hidden>
+          <div class="card-header">
+            <h3>Already on Your Account</h3>
+            <span class="card-badge" id="already-applied-count">0</span>
+          </div>
+          <div class="region-locked-note" id="already-applied-note">
+            These codes appear in the threads but were applied to your account within the last
+            <span data-meta="reapplySkipDays">few</span> days — the scanner <strong>skips re-queueing them</strong>
+            (re-trying just returns "you already applied this promotion"). They become eligible again
+            once that window passes. Adding a code manually always overrides the skip.
+          </div>
+          <div class="region-list" id="already-applied-list"></div>
+        </div>
+      </section>
+
+      <!-- Results -->
+      <section id="section-results" class="section" aria-labelledby="h-results">
+        <div class="section-header">
+          <h1 id="h-results" tabindex="-1">Results</h1>
+          <div class="results-controls">
+            <label for="results-search" class="visually-hidden">Search codes</label>
+            <input type="search" id="results-search" class="code-input results-search" placeholder="Search code…"
+                   data-action="search-results" autocomplete="off" spellcheck="false">
+            <div class="filter-row" role="group" aria-label="Filter results">
+              <button type="button" class="filter-btn active" data-action="filter" data-filter="all" aria-pressed="true">All <span class="filter-count" id="fc-all"></span></button>
+              <button type="button" class="filter-btn" data-action="filter" data-filter="success" aria-pressed="false">Success <span class="filter-count" id="fc-success"></span></button>
+              <button type="button" class="filter-btn" data-action="filter" data-filter="rejected" aria-pressed="false">Rejected <span class="filter-count" id="fc-rejected"></span></button>
+              <button type="button" class="filter-btn" data-action="filter" data-filter="region_skip" aria-pressed="false">Region-Locked <span class="filter-count" id="fc-region_skip"></span></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-scroll">
+            <table class="results-table">
+              <caption class="visually-hidden">Code results, newest first</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Code</th>
+                  <th scope="col">Source</th>
+                  <th scope="col">Result</th>
+                  <th scope="col">Details</th>
+                  <th scope="col">When</th>
+                  <th scope="col"><span class="visually-hidden">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody id="results-tbody">
+                <tr><td colspan="6" class="empty-state">No results yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Activity log -->
+      <section id="section-log" class="section" aria-labelledby="h-log">
+        <div class="section-header">
+          <h1 id="h-log" tabindex="-1">Activity Log</h1>
+        </div>
+
+        <div class="card">
+          <div class="log-container" id="log-container">
+            <div class="empty-state">Loading log…</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section id="section-settings" class="section" aria-labelledby="h-settings">
+        <div class="section-header">
+          <h1 id="h-settings" tabindex="-1">Settings</h1>
+        </div>
+
+        <!-- Postmates login -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>Postmates Login</h3>
+            <span class="card-badge" id="login-status-badge">Checking…</span>
+          </div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label">Chrome Session</div>
+              <div class="settings-desc" id="login-status-desc">Checking for saved session…</div>
+            </div>
+            <button type="button" class="btn btn-primary" data-action="login" data-target="postmates">🔐 Log in to Postmates</button>
+          </div>
+        </div>
+
+        <!-- Uber Eats login (separate session — codes Postmates rejects are retried here) -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>Uber Eats Login</h3>
+            <span class="card-badge" id="ue-login-status-badge">Checking…</span>
+          </div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label">Chrome Session</div>
+              <div class="settings-desc" id="ue-login-status-desc">Checking for saved session…</div>
+            </div>
+            <button type="button" class="btn btn-primary" data-action="login" data-target="ubereats">🔐 Log in to Uber Eats</button>
+          </div>
+        </div>
+
+        <!-- Setup steps (same list as the overview) -->
+        <div id="settings-setup-checklist" hidden>
+          <div class="setup-steps" id="settings-setup-steps"></div>
+        </div>
+
+        <!-- Code sources (Reddit threads + USCardForum) -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>Code Sources</h3>
+            <span class="card-badge" id="thread-month-badge">Loading…</span>
+          </div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label" id="thread-id-label">No thread detected</div>
+              <div class="settings-desc">r/postmates · monthly promo code thread</div>
+            </div>
+            <a id="thread-link" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" title="Open the Reddit thread" hidden>Open ↗</a>
+          </div>
+          <div class="settings-divider"></div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label" id="ue-thread-id-label">No thread detected</div>
+              <div class="settings-desc">r/UberEATS · monthly promo code thread</div>
+            </div>
+            <a id="ue-thread-link" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" title="Open the Reddit thread" hidden>Open ↗</a>
+          </div>
+          <div class="settings-divider"></div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label" id="uscf-label">Not scanned yet</div>
+              <div class="settings-desc">USCardForum · Uber Eats/Postmates coupon topic (one continuous thread — no monthly reset)</div>
+            </div>
+            <a id="uscf-link" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" title="Open the forum post" hidden>Open ↗</a>
+          </div>
+        </div>
+
+        <!-- Health check -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>System Health</h3>
+            <span class="card-badge" id="selftest-badge" hidden></span>
+          </div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label">Test Detection Pipeline</div>
+              <div class="settings-desc" id="selftest-desc">Applies a fake promo code through the real automation and verifies Postmates rejects it. Run this if results look wrong.</div>
+            </div>
+            <button type="button" class="btn btn-secondary" id="btn-selftest" data-action="self-test">🧪 Run Test</button>
+          </div>
+        </div>
+
+        <!-- Home region -->
+        <form class="card settings-card" data-action="save-home-region" autocomplete="off">
+          <div class="card-header">
+            <h3>Home Region</h3>
+          </div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <label class="settings-label" for="home-region-input">Your city / market</label>
+              <div class="settings-desc">Promos limited to another area (e.g. Las Vegas) are marked region-locked and excluded from your total. National promos always count.</div>
+            </div>
+            <div class="settings-control">
+              <input type="text" id="home-region-input" class="code-input text-input" data-action="setting-field" placeholder="e.g. Chicago">
+            </div>
+          </div>
+          <div class="settings-row pt-0">
+            <div class="settings-info">
+              <label class="settings-label" for="home-aliases-input">Also-home names</label>
+              <div class="settings-desc">Comma-separated aliases that count as home (neighborhoods, abbreviations).</div>
+            </div>
+            <div class="settings-control">
+              <input type="text" id="home-aliases-input" class="code-input text-input wide" data-action="setting-field" placeholder="e.g. chi, chicagoland">
+            </div>
+          </div>
+          <div class="settings-row pt-0">
+            <div class="settings-info">
+              <label class="settings-label" for="home-state-input">Home state</label>
+              <div class="settings-desc">Statewide promos for this state count as usable.</div>
+            </div>
+            <div class="settings-control">
+              <input type="text" id="home-state-input" class="code-input text-input" data-action="setting-field" placeholder="e.g. Illinois">
+            </div>
+          </div>
+          <div class="settings-footer">
+            <button type="submit" class="btn btn-primary btn-sm">Save home region</button>
+            <span class="save-status" id="home-region-status" aria-live="polite"></span>
+          </div>
+        </form>
+
+        <!-- Remote access (only shown to a viewer on the Mac itself) -->
+        <div class="card settings-card" id="access-card" hidden>
+          <div class="card-header">
+            <h3>Remote Access</h3>
+            <span class="card-badge" id="access-badge"></span>
+          </div>
+          <div id="access-body">
+            <div class="settings-note">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Schedule -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>Scan Schedule</h3>
+          </div>
+
+          <div class="settings-row">
+            <div class="settings-info">
+              <label class="settings-label" for="scan-interval">Source Scan Interval</label>
+              <div class="settings-desc">How often to scan Reddit and USCardForum for new promo codes</div>
+            </div>
+            <div class="settings-control">
+              <select class="settings-select" id="scan-interval" data-action="save-interval" data-key="scanIntervalHours"></select>
+            </div>
+          </div>
+
+          <div class="settings-divider"></div>
+
+          <div class="settings-row">
+            <div class="settings-info">
+              <label class="settings-label" for="apply-interval">Code Apply Interval</label>
+              <div class="settings-desc">How often to try applying queued codes (new codes are also tried right away when rate limits allow)</div>
+            </div>
+            <div class="settings-control">
+              <select class="settings-select" id="apply-interval" data-action="save-interval" data-key="applyIntervalHours"></select>
+            </div>
+          </div>
+
+          <div class="settings-footer">
+            <span id="next-scan-label">Next scan: calculating…</span>
+          </div>
+        </div>
+
+        <!-- How it works -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>How It Works</h3>
+          </div>
+          <div class="how-it-works">
+            <div class="how-step">
+              <span class="how-num">1</span>
+              <div><strong>Source Scan</strong> — Scans the monthly promo threads on r/postmates and r/UberEATS plus the USCardForum coupon topic, and extracts codes for existing customers (Uber Eats codes work on Postmates too).</div>
+            </div>
+            <div class="how-step">
+              <span class="how-num">2</span>
+              <div><strong>Code Applier</strong> — Opens Postmates in a background Chrome window, enters each queued code and records the result. Up to <span data-meta="maxCodesPerRun">a few</span> codes per run, <span data-meta="codeWait">a couple of minutes</span> apart, to avoid rate limits. New codes are applied right away when rate limits allow.</div>
+            </div>
+            <div class="how-step">
+              <span class="how-num">3</span>
+              <div><strong>Uber Eats Fallback</strong> — Codes Postmates rejects (except "Code expired") are retried on Uber Eats.</div>
+            </div>
+            <div class="how-step">
+              <span class="how-num">4</span>
+              <div><strong>Savings &amp; Regions</strong> — Region-locked promos (valid only in another area) don't count toward your savings. A code applied in the last <span data-meta="reapplySkipDays">few</span> days isn't re-queued.</div>
+            </div>
+            <div class="how-step">
+              <span class="how-num">5</span>
+              <div><strong>Monthly Reset</strong> — When a new monthly thread appears, that month's results are archived and a fresh month starts; the source catalog keeps its monitoring data.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- About -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <h3>About</h3>
+          </div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label">App version</div>
+              <div class="settings-desc">The version of Promo Tracker you're running.</div>
+            </div>
+            <div class="settings-control"><span class="about-value" id="about-version">—</span></div>
+          </div>
+          <div class="settings-divider"></div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label">Last monthly reset</div>
+              <div class="settings-desc">When the queue and results last rolled over for a new monthly thread.</div>
+            </div>
+            <div class="settings-control"><span class="about-value" id="about-reset">—</span></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Shown instead of the app when a remote device has no access cookie -->
+  <div class="auth-notice" id="auth-notice" hidden>
+    <div class="auth-card">
+      <div class="auth-icon" aria-hidden="true">🔒</div>
+      <h1>This device needs the access link</h1>
+      <p>On the Mac running Promo Tracker, open <strong>Settings → Remote access</strong> and copy the link (or run <code>npm run access-link</code>).</p>
+    </div>
+  </div>
+
+  <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -1,0 +1,7 @@
+node_modules/
+data/
+archive/
+config.local.json
+.claude/
+.worktrees/
+.DS_Store

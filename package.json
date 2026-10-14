@@ -1,0 +1,35 @@
+{
+  "name": "postmates-promo-tracker",
+  "version": "2.0.0",
+  "description": "Finds Postmates / Uber Eats promo codes on Reddit and USCardForum and applies them to your account automatically (macOS, Chrome).",
+  "private": true,
+  "license": "MIT",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "setup": "node src/index.js --setup",
+    "setup:ubereats": "node src/index.js --setup ubereats",
+    "scan": "node src/index.js --reddit",
+    "apply": "node src/index.js --apply",
+    "access-link": "node src/index.js --access-link",
+    "test": "node --test test/*.test.js",
+    "lint": "eslint .",
+    "install-service": "node src/install-service.js",
+    "uninstall-service": "node src/install-service.js --uninstall",
+    "restart": "launchctl unload ~/Library/LaunchAgents/com.postmates.promo.plist 2>/dev/null; sleep 1; launchctl load ~/Library/LaunchAgents/com.postmates.promo.plist && echo 'Service restarted'"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "express": "^4.22.3",
+    "node-cron": "^4.6.0",
+    "playwright": "^1.64.1"
+  },
+  "engines": {
+    "node": ">=20.18.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0"
+  }
+}
