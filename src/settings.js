@@ -21,6 +21,9 @@ const DEFAULTS = {
   homeRegion: '',
   homeAliases: [],
   homeState: '',
+  // Several Uber accounts (household members), each in its own Chrome
+  // profile. Off: only the first account is used, exactly as before.
+  multiAccount: false,
 };
 
 const SCAN_INTERVALS = [0.5, 1, 2, 3, 4, 6, 12, 24];
@@ -60,6 +63,7 @@ function normalize(raw) {
     homeRegion,
     homeAliases: homeRegion || (s.homeAliases || []).length ? normalizeAliases(s.homeAliases, homeRegion) : [],
     homeState: normalizeState(s.homeState),
+    multiAccount: s.multiAccount === true,
   };
 }
 
@@ -96,6 +100,10 @@ function validate(body = {}) {
       return { error: 'homeAliases must be a list or a comma-separated string' };
     }
     updates.homeAliases = body.homeAliases;
+  }
+  if (body.multiAccount !== undefined) {
+    if (typeof body.multiAccount !== 'boolean') return { error: 'multiAccount must be true or false' };
+    updates.multiAccount = body.multiAccount;
   }
   if (!Object.keys(updates).length) return { error: 'No valid fields provided' };
   return { updates };
@@ -167,8 +175,8 @@ function nextRunFromInterval(hours, now = new Date()) {
 
 // Cookie-presence hints (the real check is a live session probe). Reads the
 // profile's Cookies SQLite DB with the system sqlite3 tool.
-function countCookies(where) {
-  const cookiePath = path.join(cfg.BROWSER_PROFILE_DIR, 'Default', 'Cookies');
+function countCookies(where, profileDir = cfg.BROWSER_PROFILE_DIR) {
+  const cookiePath = path.join(profileDir, 'Default', 'Cookies');
   if (!fs.existsSync(cookiePath)) return null;
   try {
     const out = execFileSync('sqlite3', [cookiePath, `SELECT COUNT(*) FROM cookies WHERE ${where};`],
@@ -181,12 +189,12 @@ function countCookies(where) {
 
 // Postmates session cookie ('sid') or the Uber account cookie ('csid'). An
 // unauthenticated visit only sets analytics cookies, not these.
-function isLoggedIn() {
-  const n = countCookies("(host_key LIKE '%postmates%' AND name='sid') OR (host_key LIKE '%uber%' AND name='csid')");
+function isLoggedIn(profileDir = cfg.BROWSER_PROFILE_DIR) {
+  const n = countCookies("(host_key LIKE '%postmates%' AND name='sid') OR (host_key LIKE '%uber%' AND name='csid')", profileDir);
   if (n === null) return false;
   if (n === undefined) {
     // Fall back to a size heuristic (>50KB ≈ a real session).
-    try { return fs.statSync(path.join(cfg.BROWSER_PROFILE_DIR, 'Default', 'Cookies')).size > 51200; }
+    try { return fs.statSync(path.join(profileDir, 'Default', 'Cookies')).size > 51200; }
     catch { return false; }
   }
   return n > 0;
@@ -194,8 +202,18 @@ function isLoggedIn() {
 
 // Uber Eats needs its own login session (the Uber SSO cookie doesn't carry to
 // ubereats.com); an authenticated ubereats.com has a 'sid' cookie.
-function isLoggedInUberEats() {
-  return (countCookies("host_key LIKE '%ubereats%' AND name='sid'") || 0) > 0;
+function isLoggedInUberEats(profileDir = cfg.BROWSER_PROFILE_DIR) {
+  return (countCookies("host_key LIKE '%ubereats%' AND name='sid'", profileDir) || 0) > 0;
+}
+
+// Cookie hints per profile, cached briefly (the dashboard polls every 30 s).
+const cookieCache = new Map();
+function cookieHints(profileDir) {
+  const hit = cookieCache.get(profileDir);
+  if (hit && Date.now() - hit.at < SETUP_STATUS_TTL_MS) return hit.value;
+  const value = { postmates: isLoggedIn(profileDir), ubereats: isLoggedInUberEats(profileDir) };
+  cookieCache.set(profileDir, { at: Date.now(), value });
+  return value;
 }
 
 function isServiceInstalled() {
@@ -267,6 +285,7 @@ function getSetupStatus() {
 function invalidateSetupStatus() {
   setupStatusCache = null;
   setupStatusCacheAt = 0;
+  cookieCache.clear();
 }
 
 // Gate for "apply on arrival": a scan just queued new codes → start an apply
@@ -290,6 +309,6 @@ module.exports = {
   load, save, validate, hoursToCron, nextRunFromInterval,
   normalizeInterval, SCAN_INTERVALS, APPLY_INTERVALS,
   shouldApplyOnArrival,
-  isLoggedIn, isLoggedInUberEats, isServiceInstalled, getSetupStatus, invalidateSetupStatus,
+  isLoggedIn, isLoggedInUberEats, cookieHints, isServiceInstalled, getSetupStatus, invalidateSetupStatus,
   DEFAULTS, SERVICE_PLIST,
 };

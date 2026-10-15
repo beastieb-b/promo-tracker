@@ -134,6 +134,35 @@ can't hold up the app.
 
 ---
 
+## Multiple accounts
+
+Settings → **Multiple accounts** lets one Mac run codes for several Uber
+accounts, for example the people in your household, each with their own
+account. It's off by default; turned off, the app uses only the first account.
+
+- **Each account gets its own Chrome profile**, so each has its own Postmates
+  and Uber Eats login. Add accounts and log them in from Settings → Accounts.
+- **Sources are scanned once**, and every new code is queued for every account.
+  Each account keeps its own queue, results, savings, and 14-day "already
+  applied" list.
+- **Apply runs go through the accounts one after another**, each with its own
+  5-code limit. The 2-minute gap also applies between accounts, so the sites
+  never see requests faster than with a single account. A rate limit stops the
+  whole run; a logged-out account just sits out until it's signed in again.
+- A new account starts with the codes seen in the last 14 days.
+- The dashboard's account switcher shows one account or all of them together.
+  Home region and schedules are shared.
+- Removing an account moves its data and Chrome profile to
+  `data/accounts-removed/`; nothing is erased.
+
+> [!CAUTION]
+> Uber allows one account per person. Several accounts redeeming the same
+> codes from one computer and one internet connection is the kind of pattern
+> fraud checks look for, and it can get accounts flagged or promos reversed.
+> Use this only for people's own real accounts.
+
+---
+
 ## Using it from your phone or another computer
 
 By default the dashboard listens on `127.0.0.1`, so only this Mac can open it.
@@ -180,7 +209,7 @@ How access works:
 | **Queue** | Codes waiting to be tried, in the exact order the next run will try them, with source and region hints. Add codes by hand (they go first). **Already on Your Account** lists codes skipped because they were applied recently. |
 | **Results** | Every attempt with result, reason, platform, time, and a link to the exact Reddit comment or forum post. Per-row actions: **Retry**, **mark region-locked**, **count it**, and delete (with Undo). |
 | **Activity Log** | The raw event log: scans, applies, sign-ins, skips, errors. |
-| **Settings** | Login status for both sites, code sources (both monthly threads plus the forum topic, each linked), the **System Health** self-test, scan and apply intervals, home region, and remote access. |
+| **Settings** | Login status for both sites (or, with Multiple accounts on, an **Accounts** list with each account's logins), code sources (both monthly threads plus the forum topic, each linked), the **System Health** self-test, scan and apply intervals, home region, and remote access. |
 
 The sidebar holds **Check Sources** and **Apply Codes** (run now) plus
 **Restart** and **Quit**. Sections have their own addresses (`#queue`,
@@ -199,6 +228,7 @@ source that can't be read.
 - **Code apply interval**: how often to try queued codes (default every 4 h;
   1 h to 24 h). New codes are also applied on arrival (see above).
 - **Home region**: city, nicknames, and state (see Setup).
+- **Multiple accounts**: run codes for several Uber accounts (see above).
 
 **`config.local.json`** (gitignored, read at startup)
 
@@ -239,7 +269,7 @@ table (mark region-locked, or count it back).
 | Command | Description |
 |---|---|
 | `npm start` | Run the app in the foreground. |
-| `npm run setup` / `setup:ubereats` | Open Chrome to log in to Postmates / Uber Eats. |
+| `npm run setup` / `setup:ubereats` | Open Chrome to log in to Postmates / Uber Eats (add `-- --account <id>` for another account). |
 | `npm run scan` | Run a one-off source scan. |
 | `npm run apply` | Run a one-off apply pass. |
 | `npm run access-link` | Print the links that let other devices open the dashboard. |
@@ -303,6 +333,8 @@ All state lives in `data/` (gitignored). Full-file writes are **atomic**
 | `daemon.log` / `daemon-error.log` | Console output from the background service. |
 | `debug-screenshots/` | Screenshots taken when an apply step fails (kept 14 days). |
 | `browser-profile/` | The logged-in Chrome profile. **It contains your sessions; keep it private.** |
+| `accounts.json`, `accounts/<id>/` | Extra accounts (Multiple accounts): each folder has that account's queue, results, logins and Chrome profile. |
+| `code_flags.json` | Per-code notes for the first account (held for Uber Eats, failure counts). |
 
 When a newer r/postmates monthly thread appears, that cycle's results and any
 codes queued before the current month are archived to `archive/`. Codes queued
@@ -330,10 +362,13 @@ node src/index.js --no-schedule   # dashboard only: no scans or applies
 | `src/classify.js` | Turning the promo box's new text into a verdict. |
 | `src/runner.js` | Apply runs (Uber Eats fallback, parking, budget) and the self-test. |
 | `src/login.js` | Login windows and session checks. |
-| `src/session.js` | Persisted "is this login working" state. |
+| `src/session.js` | Persisted "is this login working" state, per account. |
 | `src/extractor.js` | Promo-code extraction and per-code comment context. |
 | `src/region.js` / `src/us-states.js` | Home/region detection and savings eligibility. |
-| `src/state.js` | State I/O, stats, savings by month, the 14-day ledger, monthly reset. |
+| `src/state.js` | Shared state: code catalog, monthly threads, logs, banners, monthly reset. |
+| `src/store.js` | One account's queue, results, flags, 14-day ledger, archives and savings. |
+| `src/accounts.js` | The account list (Multiple accounts) and where each account's files live. |
+| `src/stats.js` | Dashboard numbers for one account or all of them. |
 | `src/settings.js` | Settings, cron conversion, setup checklist, apply-on-arrival guard. |
 | `src/config.js` | Paths, limits, timings, and `config.local.json`. |
 | `src/time.js` | Local-calendar helpers. |

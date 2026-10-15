@@ -12,6 +12,7 @@ import { initQueue } from './queue.js';
 import { initResults } from './results.js';
 import { initLog } from './log.js';
 import { initSettings } from './settings.js';
+import { initAccounts } from './accounts.js';
 import { initEvents, startEvents, stopEvents } from './events.js';
 import { copyText } from './util.js';
 
@@ -53,6 +54,7 @@ async function start() {
   initResults();
   initLog();
   initSettings();
+  initAccounts();   // restores the stored account choice before anything loads
   initEvents();
   onAuthRequired(showAuthNotice);
 

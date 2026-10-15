@@ -54,7 +54,9 @@ async function cli(work) {
 
 if (role === 'setup') {
   const target = args.includes('ubereats') ? 'ubereats' : 'postmates';
-  cli(() => require('./login').setupLogin({ target }));
+  const i = args.indexOf('--account');
+  const accountId = i >= 0 && args[i + 1] ? args[i + 1] : 'main';
+  cli(() => require('./login').setupLogin({ target, accountId }));
   return;
 }
 if (role === 'scan') {
@@ -214,7 +216,9 @@ async function runApply() {
         server.broadcast({ type: 'apply_progress', ...u, scanStatus: getScanStatus() });
       },
     });
-    result = await guardRun(run, cfg.APPLY_DEADLINE_MS, 'Apply run', () => browser.closeBrowser());
+    // Each account gets its own budget (see runner), so the deadline scales.
+    const accountCount = require('./accounts').active().length;
+    result = await guardRun(run, cfg.APPLY_DEADLINE_MS * accountCount, 'Apply run', () => browser.closeBrowser());
     if (result.deadline) browser.forceRelease('apply');
   } catch (err) {
     console.error('Apply run crashed:', err.message);
@@ -309,14 +313,18 @@ async function runDailyCheck(triesLeft = 10) {
   } catch (err) {
     console.error('  Self-test crashed:', err.message);
   }
-  try {
-    const v = await login.verifySession('ubereats');
-    server.broadcast({ type: 'session_verified', platform: 'ubereats', ok: v.verified, error: v.error || null });
-    console.log(v.verified === true ? '  ✅ Uber Eats session verified'
-      : v.verified === false ? '  ⚠️ Uber Eats session expired — dashboard banner raised'
-      : `  ❓ Uber Eats session check inconclusive${v.error ? ` (${v.error})` : ''}`);
-  } catch (err) {
-    console.error('  Uber Eats session check crashed:', err.message);
+  const multi = require('./accounts').enabled();
+  for (const account of require('./accounts').active()) {
+    const who = multi ? ` (${account.name})` : '';
+    try {
+      const v = await login.verifySession('ubereats', account.id);
+      server.broadcast({ type: 'session_verified', platform: 'ubereats', ok: v.verified, error: v.error || null, account: account.id, accountName: account.name });
+      console.log(v.verified === true ? `  ✅ Uber Eats session verified${who}`
+        : v.verified === false ? `  ⚠️ Uber Eats session expired${who} — dashboard banner raised`
+        : `  ❓ Uber Eats session check inconclusive${who}${v.error ? ` (${v.error})` : ''}`);
+    } catch (err) {
+      console.error(`  Uber Eats session check crashed${who}:`, err.message);
+    }
   }
 }
 

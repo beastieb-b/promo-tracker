@@ -143,3 +143,59 @@ test('malformed input gets a short JSON error, never a stack trace', async () =>
   assert.strictEqual(badJson.status, 400);
   assert.doesNotMatch(badJson.text, /at |\.js:/);
 });
+
+test('multiple accounts: off by default, then add, select, change and remove accounts', async () => {
+  const add = await req('POST', '/api/accounts', { headers: CLIENT, body: { name: 'Partner' } });
+  assert.strictEqual(add.status, 409, 'account management needs the setting on');
+  let st = await req('GET', '/api/stats');
+  assert.strictEqual(st.json.multiAccount, false);
+  assert.deepStrictEqual(st.json.accounts.map(a => a.id), ['main']);
+
+  // A code seen recently (in the shared catalog) is handed to a new account.
+  require('../src/state').saveCodeCatalog({ codes: { SEEN10: { code: 'SEEN10', sourceKey: 'uscf', lastSeenAt: new Date().toISOString() } }, sources: {} });
+  assert.strictEqual((await req('POST', '/api/settings', { headers: CLIENT, body: { multiAccount: true } })).json.multiAccount, true);
+  const created = await req('POST', '/api/accounts', { headers: CLIENT, body: { name: 'Partner' } });
+  assert.strictEqual(created.status, 200);
+  const id = created.json.account.id;
+  assert.strictEqual(created.json.queued, 1);
+
+  st = await req('GET', '/api/stats');
+  assert.strictEqual(st.json.selectedAccount, 'all');
+  assert.deepStrictEqual(st.json.accounts.map(a => a.name), ['Account 1', 'Partner']);
+  const mine = await req('GET', `/api/queue?account=${id}`);
+  assert.deepStrictEqual(mine.json.queue.map(e => [e.code, e.accountName]), [['SEEN10', 'Partner']]);
+  assert.strictEqual((await req('GET', '/api/stats?account=nope')).status, 404);
+
+  // Changes to one account's rows must say which account.
+  assert.strictEqual((await req('DELETE', '/api/queue/SEEN10', { headers: CLIENT })).status, 400);
+  const added = await req('POST', '/api/queue/add', { headers: CLIENT, body: { code: 'both55', account: 'all' } });
+  assert.deepStrictEqual(added.json, { added: 2, code: 'BOTH55' });
+  assert.strictEqual((await req('DELETE', `/api/queue/BOTH55?account=${id}`, { headers: CLIENT })).json.removed, true);
+  const all = await req('GET', '/api/queue?account=all');
+  assert.deepStrictEqual(all.json.queue.map(e => [e.code, e.account]).sort(), [['BOTH55', 'main'], ['SAVE20', 'main'], ['SEEN10', id]].sort());
+
+  assert.strictEqual((await req('POST', `/api/accounts/${id}`, { headers: CLIENT, body: { name: 'Sam' } })).json.account.name, 'Sam');
+  assert.strictEqual((await req('DELETE', '/api/accounts/main', { headers: CLIENT })).status, 400);
+  assert.strictEqual((await req('DELETE', `/api/accounts/${id}`, { headers: CLIENT })).json.removed, true);
+  assert.deepStrictEqual((await req('GET', '/api/stats')).json.accounts.map(a => a.id), ['main']);
+  await req('POST', '/api/settings', { headers: CLIENT, body: { multiAccount: false } });
+});
+
+test('review fixes: new accounts get only this month\'s codes; stale account requests are refused when off', async () => {
+  const now = new Date();
+  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 28).toISOString();
+  require('../src/state').saveCodeCatalog({ codes: {
+    THISMONTH1: { code: 'THISMONTH1', sourceKey: 'uscf', lastSeenAt: now.toISOString() },
+    LASTMONTH1: { code: 'LASTMONTH1', sourceKey: 'uscf', lastSeenAt: lastMonth },
+  }, sources: {} });
+  await req('POST', '/api/settings', { headers: CLIENT, body: { multiAccount: true } });
+  const created = await req('POST', '/api/accounts', { headers: CLIENT, body: { name: 'Kid' } });
+  const id = created.json.account.id;
+  const q = await req('GET', `/api/queue?account=${id}`);
+  assert.deepStrictEqual(q.json.queue.map(e => e.code), ['THISMONTH1']);
+
+  await req('POST', '/api/settings', { headers: CLIENT, body: { multiAccount: false } });
+  const stale = await req('DELETE', `/api/queue/THISMONTH1?account=${id}`, { headers: CLIENT });
+  assert.strictEqual(stale.status, 409, 'must not fall through to the first account');
+  assert.strictEqual((await req('POST', '/api/queue/add', { headers: CLIENT, body: { code: 'NEW12345', account: id } })).status, 409);
+});

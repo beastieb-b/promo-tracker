@@ -1,5 +1,6 @@
 // Settings page: logins, sources, self-test, home region, remote access,
 // schedule, about. Fields the user is editing are never overwritten by polls.
+// Login buttons and the multiple-accounts cards live in accounts.js.
 
 import { state, subscribe, publish } from './state.js';
 import { api, reportError } from './api.js';
@@ -8,9 +9,10 @@ import { showToast } from './toast.js';
 import { isVisible } from './router.js';
 import { loadAccess, loadStats, quiet } from './data.js';
 import { renderSetup, uscfLatestUrl } from './overview.js';
+import { renderLoginButtons } from './accounts.js';
 import {
   $, escapeHtml as esc, safeUrl, timeAgo, intervalLabel, formatMonth, formatDay, formatWait,
-  platformName, setText, show, patchHTML, copyText,
+  setText, show, patchHTML, copyText, setBadge,
 } from './util.js';
 
 export function initSettings() {
@@ -25,7 +27,6 @@ export function initSettings() {
   onAction('change', 'setting-field', markDirty);
   onAction('change', 'save-interval', saveInterval);
   onAction('submit', 'save-home-region', saveHomeRegion);
-  onAction('click', 'login', (e, el) => startLogin(el.dataset.target));
   onAction('click', 'self-test', runSelfTest);
   onAction('click', 'copy-access-link', (e, el) => copyAccessLink(Number(el.dataset.index)));
   onAction('click', 'select-all', (e, el) => el.select());
@@ -123,14 +124,6 @@ function renderScheduleFooter(s) {
   setText('next-scan-label', text);
 }
 
-const BADGE_CLASSES = ['badge-ok', 'badge-info', 'badge-warn', 'badge-error', 'badge-running', 'badge-muted'];
-function setBadge(el, text, cls) {
-  if (!el) return;
-  setText(el, text);
-  el.classList.remove(...BADGE_CLASSES);
-  if (cls) el.classList.add(cls);
-}
-
 // Tri-state: true = confirmed working, null = saved but unverified, false = not logged in.
 function renderLoginCard(loggedIn, badgeId, descId, name, loaded) {
   if (!loaded) return;
@@ -143,23 +136,6 @@ function renderLoginCard(loggedIn, badgeId, descId, name, loaded) {
     : loggedIn === false
       ? `Not logged in or session expired. Click the button to open Chrome and log in to ${name}.`
       : `A saved session exists but hasn't been verified yet — it's checked right after login, by ${dailyCheckPhrase()}, and on apply runs.`);
-}
-
-/** Every login button (Settings cards + session banners) renders from state. */
-export function renderLoginButtons() {
-  const windowOpen = state.scanStatus?.browserBusy === 'login';
-  document.querySelectorAll('button[data-action="login"]').forEach(btn => {
-    const target = btn.dataset.target === 'ubereats' ? 'ubereats' : 'postmates';
-    const phase = state.login[target];
-    const loggedIn = target === 'ubereats' ? state.stats?.ueLoggedIn : state.stats?.loggedIn;
-    let text;
-    if (phase === 'opening') text = '⏳ Opening Chrome…';
-    else if (phase === 'open' || windowOpen) text = '⏳ Finish login in Chrome';
-    else if (btn.dataset.variant === 'banner') text = '🔐 Log in';
-    else text = loggedIn === true ? '🔄 Re-login' : `🔐 Log in to ${platformName(target)}`;
-    btn.disabled = Boolean(phase) || windowOpen;
-    setText(btn, text);
-  });
 }
 
 function renderSelfTest() {
@@ -318,24 +294,6 @@ async function saveHomeRegion(e, form) {
     reportError(err, "Couldn't save the home region");
   } finally {
     if (btn) btn.disabled = false;
-  }
-}
-
-async function startLogin(target) {
-  const t = target === 'ubereats' ? 'ubereats' : 'postmates';
-  if (state.login[t]) return;
-  const name = platformName(t);
-  state.login[t] = 'opening';
-  publish('login');
-  try {
-    await api('POST', '/api/setup', { target: t });
-    state.login[t] = 'open';
-    showToast(`Opening Chrome for ${name} login — log in, then close the window`);
-  } catch (err) {
-    state.login[t] = false;
-    reportError(err, `Couldn't open the ${name} login`);
-  } finally {
-    publish('login');
   }
 }
 

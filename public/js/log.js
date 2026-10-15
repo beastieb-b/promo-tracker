@@ -1,11 +1,13 @@
 // Activity Log page.
 
 import { state, subscribe } from './state.js';
+import { isMulti, accountName } from './scope.js';
 import { $, escapeHtml as esc, cssToken, formatDateTime, patchHTML } from './util.js';
 
 export function initLog() {
   subscribe('log', renderLog);
   subscribe('meta', renderLog);   // time zone may have changed
+  subscribe('settings', renderLog);   // multiple accounts toggled
 }
 
 const EVENT_LABELS = {
@@ -61,6 +63,10 @@ const REASON_LABELS = {
 
 function formatLogDetail(entry) {
   const parts = [];
+  // Several accounts: say whose entry it is (when the server records it).
+  if (isMulti() && (entry.accountName || typeof entry.account === 'string')) {
+    parts.push(`account: ${accountName(entry.account, entry.accountName)}`);
+  }
   if (entry.source) parts.push(`source: ${entry.source}`);
   if (entry.thread_id) parts.push(`thread: ${entry.thread_id}`);
   if (entry.comments_scanned) parts.push(`${entry.comments_scanned} comments`);

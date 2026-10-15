@@ -7,7 +7,10 @@ const settings = require('./settings');
 const session = require('./session');
 const browser = require('./browser');
 const access = require('./access');
-const { timeZoneName } = require('./time');
+const accounts = require('./accounts');
+const stores = require('./store');
+const stats = require('./stats');
+const { timeZoneName, monthStartMs } = require('./time');
 
 const app = express();
 app.disable('x-powered-by');
@@ -128,15 +131,53 @@ let hooks = {
 
 function registerHooks(h) { hooks = { ...hooks, ...h }; }
 
-// ── Read endpoints ───────────────────────────────────────────────────────────
+// ── Accounts ─────────────────────────────────────────────────────────────────
 
 // Tri-state login status: a real navigation result wins; with none yet, a
 // saved cookie means "unverified" (null) and no cookie means logged out.
-function loginState(platform, hasCookie) {
-  const v = session.get(platform);
+function loginState(account, platform) {
+  const v = session.get(platform, account.id);
   if (v === true || v === false) return v;
-  return hasCookie ? null : false;
+  return settings.cookieHints(account.paths.profile)[platform] ? null : false;
 }
+
+const worst = (vals) => (vals.includes(false) ? false : vals.includes(null) ? null : true);
+const allStores = () => (accounts.enabled() ? stores.active() : [stores.main()]);
+
+// Which accounts a read is about: ?account=<id>|all (only with multiple
+// accounts on; otherwise always the first account). null = unknown account.
+function selection(req) {
+  if (!accounts.enabled()) return { selected: accounts.MAIN, stores: [stores.main()] };
+  const want = String(req.query.account || 'all');
+  if (want === 'all') return { selected: 'all', stores: stores.active() };
+  const one = stores.forAccount(want);
+  return one ? { selected: want, stores: [one] } : null;
+}
+
+// The single account a change applies to (?account=<id>; ignored when
+// multiple accounts are off). Answers the request itself when it's missing.
+function target(req, res) {
+  if (!accounts.enabled()) {
+    // A stale request (an Undo window that outlived turning the setting off)
+    // must not land on the first account instead.
+    if (req.query.account && req.query.account !== accounts.MAIN) {
+      busy(res, 'Multiple accounts are turned off');
+      return null;
+    }
+    return stores.main();
+  }
+  const one = req.query.account ? stores.forAccount(String(req.query.account)) : null;
+  if (!one) res.status(400).json({ error: 'Which account? Add ?account=<id>' });
+  return one;
+}
+
+function accountSummaries() {
+  return stats.accountSummaries(allStores(), loginState);
+}
+
+const broadcastAccounts = () => broadcast({ type: 'accounts_updated', accounts: accountSummaries() });
+
+// ── Read endpoints ───────────────────────────────────────────────────────────
 
 app.get('/api/meta', (req, res) => {
   res.json({
@@ -166,13 +207,19 @@ app.get('/api/access', (req, res) => {
 });
 
 app.get('/api/stats', (req, res) => {
-  const setup = settings.getSetupStatus();
+  const sel = selection(req);
+  if (!sel) return res.status(404).json({ error: 'No such account' });
+  const summaries = accountSummaries();
+  const picked = summaries.filter(a => sel.stores.some(st => st.account.id === a.id));
   res.json({
-    ...state.getStats(),
-    loggedIn: loginState('postmates', setup.cookies.postmates),
-    ueLoggedIn: loginState('ubereats', setup.cookies.ubereats),
+    ...stats.getStats(sel.stores),
+    loggedIn: worst(picked.map(a => a.loggedIn)),
+    ueLoggedIn: worst(picked.map(a => a.ueLoggedIn)),
+    multiAccount: accounts.enabled(),
+    selectedAccount: sel.selected,
+    accounts: summaries,
     settings: settings.load(),
-    setup,
+    setup: settings.getSetupStatus(),
     scanStatus: hooks.getScanStatus(),
     healthWarning: state.getHealthWarning(),
   });
@@ -183,8 +230,20 @@ app.get('/api/log', (req, res) => {
   res.json(state.getLog(limit));
 });
 
-app.get('/api/queue', (req, res) => res.json({ queue: state.getQueueDetails() }));
-app.get('/api/processed', (req, res) => res.json({ processed: state.getProcessedDetails() }));
+app.get('/api/queue', (req, res) => {
+  const sel = selection(req);
+  if (!sel) return res.status(404).json({ error: 'No such account' });
+  res.json({ queue: sel.stores.flatMap(st => st.getQueueDetails()) });
+});
+
+app.get('/api/processed', (req, res) => {
+  const sel = selection(req);
+  if (!sel) return res.status(404).json({ error: 'No such account' });
+  const rows = sel.stores.flatMap(st => st.getProcessedDetails())
+    .sort((a, b) => ((a.ts || '') < (b.ts || '') ? -1 : (a.ts || '') > (b.ts || '') ? 1 : 0));
+  res.json({ processed: rows });
+});
+
 app.get('/api/settings', (req, res) => res.json(settings.load()));
 
 // ── Changes ──────────────────────────────────────────────────────────────────
@@ -192,9 +251,15 @@ app.get('/api/settings', (req, res) => res.json(settings.load()));
 app.post('/api/settings', (req, res) => {
   const { updates, error } = settings.validate(req.body || {});
   if (error) return res.status(400).json({ error });
+  const before = settings.load();
   const saved = settings.save(updates);
   if (hooks.reschedule && (updates.scanIntervalHours !== undefined || updates.applyIntervalHours !== undefined)) {
     hooks.reschedule(saved);
+  }
+  if (updates.multiAccount !== undefined && updates.multiAccount !== before.multiAccount) {
+    state.appendLog({ type: 'multi_account', enabled: saved.multiAccount });
+    broadcastAccounts();
+    broadcast({ type: 'queue_updated' });
   }
   res.json(saved);
 });
@@ -233,7 +298,11 @@ app.post('/api/self-test', (req, res) => {
 });
 
 app.post('/api/setup', (req, res) => {
-  const target = req.body && req.body.target === 'ubereats' ? 'ubereats' : 'postmates';
+  const body = req.body || {};
+  const platform = body.target === 'ubereats' ? 'ubereats' : 'postmates';
+  if (!accounts.enabled() && body.account && body.account !== accounts.MAIN) return busy(res, 'Multiple accounts are turned off');
+  const account = accounts.enabled() ? accounts.get(String(body.account || accounts.MAIN)) : accounts.main();
+  if (!account) return res.status(404).json({ error: 'No such account' });
   // The browser is single-tenant; answer "not now" in the response so the
   // button can reset and say why.
   if (browser.isBusy()) {
@@ -242,54 +311,135 @@ app.post('/api/setup', (req, res) => {
       : 'The browser is busy (apply run or session check) — try again in a moment.');
   }
   res.status(202).json({ started: true });
+  const who = { account: account.id, accountName: account.name };
   const { setupLogin, verifySession } = require('./login');
   (async () => {
-    const { closed } = await setupLogin({ target });
+    const { closed } = await setupLogin({ target: platform, accountId: account.id });
     settings.invalidateSetupStatus();
-    if (closed === 'timeout') broadcast({ type: 'login_timeout', target });
-    broadcast({ type: 'setup_done', target, loggedIn: settings.isLoggedIn(), ueLoggedIn: settings.isLoggedInUberEats() });
+    if (closed === 'timeout') broadcast({ type: 'login_timeout', target: platform, ...who });
+    const hints = settings.cookieHints(account.paths.profile);
+    broadcast({ type: 'setup_done', target: platform, loggedIn: hints.postmates, ueLoggedIn: hints.ubereats, ...who });
     // Verify with a real navigation so the card doesn't sit at "Unverified"
     // until an apply run happens to exercise this site.
-    const v = await verifySession(target);
-    broadcast({ type: 'session_verified', platform: target, ok: v.verified, error: v.error || null });
+    const v = await verifySession(platform, account.id);
+    broadcast({ type: 'session_verified', platform, ok: v.verified, error: v.error || null, ...who });
   })().catch(err => broadcast({ type: 'error', message: `Login failed: ${err.message}` }));
 });
 
 app.post('/api/queue/add', (req, res) => {
-  const code = state.normalizeCode((req.body || {}).code);
+  const body = req.body || {};
+  const code = state.normalizeCode(body.code);
   if (!code) return res.status(400).json({ error: 'A code is 4–32 letters, numbers, underscores or hyphens' });
-  const added = state.addToQueue([{ code, sourceKey: 'manual', sourceLabel: 'Manual', statusHint: 'Added by hand', manual: true, lastSeenAt: new Date().toISOString() }]);
+  let into;
+  if (!accounts.enabled() && body.account && body.account !== 'all' && body.account !== accounts.MAIN) {
+    return busy(res, 'Multiple accounts are turned off');
+  }
+  if (!accounts.enabled()) into = [stores.main()];
+  else if (!body.account || body.account === 'all') into = stores.active();
+  else {
+    const one = stores.forAccount(String(body.account));
+    if (!one) return res.status(404).json({ error: 'No such account' });
+    into = [one];
+  }
+  const entry = { code, sourceKey: 'manual', sourceLabel: 'Manual', statusHint: 'Added by hand', manual: true, lastSeenAt: new Date().toISOString() };
+  const added = into.filter(st => st.addToQueue([entry]) > 0).length;
   broadcast({ type: 'queue_updated' });
   res.json({ added, code });
 });
 
 app.delete('/api/queue/:code', (req, res) => {
-  const removed = state.removeFromQueue(req.params.code);
+  const st = target(req, res);
+  if (!st) return;
+  const removed = st.removeFromQueue(req.params.code);
   broadcast({ type: 'queue_updated' });
   res.json({ removed });
 });
 
 app.delete('/api/processed/:code', (req, res) => {
-  const deleted = state.deleteResult(req.params.code);
+  const st = target(req, res);
+  if (!st) return;
+  const deleted = st.deleteResult(req.params.code);
   broadcast({ type: 'processed_updated' });
   res.json({ deleted });
 });
 
 app.post('/api/processed/:code/requeue', (req, res) => {
-  const requeued = state.requeueResult(req.params.code);
+  const st = target(req, res);
+  if (!st) return;
+  const requeued = st.requeueResult(req.params.code);
   broadcast({ type: 'queue_updated' });
   broadcast({ type: 'processed_updated' });
   res.json({ requeued });
 });
 
 app.post('/api/processed/:code/reclassify', (req, res) => {
+  const st = target(req, res);
+  if (!st) return;
   const { result } = req.body || {};
   if (!['success', 'region_skip'].includes(result)) {
     return res.status(400).json({ error: 'result must be "success" or "region_skip"' });
   }
-  const updated = state.reclassifyResult(req.params.code, result);
+  const updated = st.reclassifyResult(req.params.code, result);
   broadcast({ type: 'processed_updated' });
   res.json({ updated });
+});
+
+// Adding, renaming and removing accounts (only with multiple accounts on).
+const multiOnly = (req, res, next) => (accounts.enabled() ? next() : busy(res, 'Turn on multiple accounts in Settings first'));
+const sendError = (res, err) => res.status(err.status || 500).json({ error: err.message });
+
+app.post('/api/accounts', multiOnly, (req, res) => {
+  let account;
+  try { account = accounts.create((req.body || {}).name); } catch (err) { return sendError(res, err); }
+  // Give the new account this month's codes (it has no history, so nothing
+  // is "already applied").
+  // Codes already found expired on another account are skipped (expiry
+  // isn't per account).
+  // Only this calendar month's codes (last month's have mostly expired, which
+  // is why the monthly reset archives them), and none another account already
+  // found expired (expiry isn't per account).
+  const cutoff = Math.max(Date.now() - cfg.REAPPLY_SKIP_DAYS * 86400000, monthStartMs());
+  const expired = new Set(stores.active().flatMap(st => st.getProcessedDetails())
+    .filter(r => r.result === 'rejected' && /^Code expired\b/.test(r.detail || '')).map(r => r.code));
+  const catalog = state.getCodeCatalog();
+  const recent = Object.keys(catalog.codes)
+    .map(code => ({ ...stores.catalogMeta(catalog, code), code }))
+    .filter(m => m.sourceKey !== 'manual' && !expired.has(m.code) && (Date.parse(m.lastSeenAt || '') || 0) >= cutoff);
+  const queued = stores.store(account).addToQueue(recent);
+  state.appendLog({ type: 'account_added', account: account.id, name: account.name, queued });
+  broadcastAccounts();
+  broadcast({ type: 'queue_updated' });
+  res.json({ account: { id: account.id, name: account.name }, queued });
+});
+
+app.post('/api/accounts/:id', multiOnly, (req, res) => {
+  let account;
+  try { account = accounts.rename(req.params.id, (req.body || {}).name); } catch (err) { return sendError(res, err); }
+  broadcastAccounts();
+  res.json({ account: { id: account.id, name: account.name } });
+});
+
+app.delete('/api/accounts/:id', multiOnly, async (req, res) => {
+  const account = accounts.get(req.params.id);
+  if (!account) return res.status(404).json({ error: 'No such account' });
+  if (account.id === accounts.MAIN) return res.status(400).json({ error: 'The first account can\'t be removed' });
+  // Hold the browser so no run can open this account's Chrome while its
+  // profile is being moved; close it first if it's the one that's open.
+  const release = browser.acquire('account');
+  if (!release) return busy(res, 'The browser is busy — try again after the current run');
+  try {
+    if (browser.currentProfile() === account.paths.profile) await browser.closeBrowser();
+    accounts.remove(account.id);
+  } catch (err) {
+    return sendError(res, err);
+  } finally {
+    release();
+  }
+  session.forget(account.id);
+  state.appendLog({ type: 'account_removed', account: account.id, name: account.name });
+  broadcastAccounts();
+  broadcast({ type: 'queue_updated' });
+  res.json({ removed: true });
 });
 
 // ── Quit / restart ───────────────────────────────────────────────────────────

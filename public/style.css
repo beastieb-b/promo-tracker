@@ -1782,3 +1782,229 @@ a.meta-pill.source:hover { background: rgba(10, 132, 255, 0.28); }
   .success-chip,
   .region-chip { min-height: 44px; }
 }
+
+/* ── Multiple accounts ───────────────────────────────────────────────────── */
+/* Everything below only shows while Settings → Multiple accounts is on, except
+   the toggle itself. */
+
+:root {
+  --indigo-fill: rgba(94, 92, 230, 0.2);
+  --indigo-edge: rgba(94, 92, 230, 0.42);
+  --indigo-text: #B4B3FF;   /* ≥4.5:1 on --bg-2 / --bg-3 */
+}
+
+/* Section title + account switcher */
+.section-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.account-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--bg-3);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%23636366' viewBox='0 0 16 16'%3E%3Cpath d='M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  border: 1px solid var(--sep);
+  border-radius: 20px;
+  color: var(--label);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 28px 4px 12px;
+  max-width: 200px;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  outline: none;
+  transition: border-color var(--t);
+}
+.account-select:hover { border-color: var(--indigo-edge); }
+.account-select:focus { border-color: var(--blue); }
+.account-select:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.account-select option { background: var(--bg-2); }
+
+/* Add-code form: "All accounts" / one account, sized like the code input */
+.add-code-account-wrap { display: inline-flex; }
+.add-code-account {
+  border-radius: 8px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  font-size: 13px;
+  max-width: 150px;
+}
+
+/* Which account a row / chip belongs to (shown in the "All accounts" view) */
+.account-tag {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  background: var(--indigo-fill);
+  border: 1px solid var(--indigo-edge);
+  color: var(--indigo-text);
+  vertical-align: middle;
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.success-chip .account-tag,
+.region-chip .account-tag { margin-left: 0; }
+.result-code-stack .account-tag { margin-left: 0; align-self: flex-start; }
+.meta-pill.account-pill {
+  color: var(--indigo-text);
+  background: var(--indigo-fill);
+  border-color: var(--indigo-edge);
+}
+
+/* Live progress: account name in front of apply lines */
+.live-log-account {
+  flex-shrink: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--indigo-text);
+  background: var(--indigo-fill);
+  border-radius: 999px;
+  padding: 0 7px;
+}
+
+/* Per-account session banners: one or two Log in buttons */
+.banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+/* On/off switch (Settings → Multiple accounts) */
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  display: inline-block;
+  width: 46px;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--bg-4);
+  border: 1px solid var(--sep);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background var(--t), border-color var(--t);
+}
+.switch::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform var(--t);
+}
+.switch:checked { background: var(--green); border-color: transparent; }
+.switch:checked::before { transform: translateX(18px); }
+.switch:disabled { opacity: 0.4; cursor: not-allowed; }
+.switch:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* Accounts card */
+.accounts-list { padding: 2px 0; }
+
+.account-entry {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--sep);
+}
+.account-entry:last-child { border-bottom: none; }
+
+.account-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.account-name-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.account-name-input { width: 170px; font-weight: 600; }
+
+.account-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.meta-pill.account-saved {
+  color: var(--green);
+  border-color: rgba(48, 209, 88, 0.25);
+  background: var(--green-fill);
+}
+.account-remove { margin-left: auto; }
+
+.account-platforms {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.account-platform {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--sep);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+}
+.account-platform-name { font-size: 12.5px; font-weight: 600; color: var(--label); }
+.account-platform .btn { margin-left: auto; }
+
+.add-account-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 12px;
+}
+.add-account-form .text-input { width: 200px; }
+.add-account-note { flex-basis: 100%; font-size: 11.5px; color: var(--label-3); }
+
+@media (max-width: 640px) {
+  .account-select { max-width: 60vw; }
+  /* Code input + account picker + Add share one line: let the input shrink. */
+  .add-code-form .code-input { min-width: 0; }
+  .add-code-account { max-width: 118px; }
+  .account-name-form { flex: 1 1 100%; }
+  .account-name-input { flex: 1; width: auto; min-width: 0; }
+  .account-platforms { grid-template-columns: 1fr; }
+  .add-account-form .text-input { flex: 1; width: auto; min-width: 0; }
+  .banner-actions { flex-direction: column; }
+}
+
+@media (pointer: coarse) {
+  .account-select,
+  .account-entry .btn,
+  .account-name-input,
+  .add-account-form .btn,
+  .add-account-form .text-input,
+  .banner-actions .btn { min-height: 44px; }
+  /* The switch stays switch-sized; an invisible ring makes the tap target ≥44px. */
+  .switch::after { content: ''; position: absolute; inset: -9px; }
+}

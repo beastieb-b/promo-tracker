@@ -183,6 +183,16 @@ export function show(el, visible) {
   if (node) node.hidden = !visible;
 }
 
+const BADGE_CLASSES = ['badge-ok', 'badge-info', 'badge-warn', 'badge-error', 'badge-running', 'badge-muted'];
+
+/** Card badge text + state class (login, self-test, remote access, accounts). */
+export function setBadge(el, text, cls) {
+  if (!el) return;
+  setText(el, text);
+  el.classList.remove(...BADGE_CLASSES);
+  if (cls) el.classList.add(cls);
+}
+
 const lastHtml = new WeakMap();
 
 /**

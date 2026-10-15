@@ -3,6 +3,7 @@ const cfg = require('./config');
 const state = require('./state');
 const browser = require('./browser');
 const reads = require('./reads');
+const stores = require('./store');
 const { extractCodesWithContext } = require('./extractor');
 const { detectRegionRestriction } = require('./region');
 const { monthKey } = require('./time');
@@ -88,6 +89,26 @@ function setSourceStatus(sourceKey, updates) {
     ...updates,
     lastCheckedAt: new Date().toISOString(),
   });
+}
+
+// Queue codes for every active account. Per account, a code it applied in the
+// last REAPPLY_SKIP_DAYS is skipped (trying again only gets "you already
+// applied this promotion"), and codes it already has queued or tried are left
+// alone. Returns how many distinct codes were newly queued anywhere, and
+// which codes every account skipped as already applied.
+function queueForAccounts(entries) {
+  const queued = new Set();
+  const skippedEverywhere = new Set(entries.map(e => e.code));
+  for (const s of stores.active()) {
+    const recent = s.getRecentlyApplied();
+    const eligible = entries.filter(e => !recent.has(e.code));
+    for (const e of eligible) skippedEverywhere.delete(e.code);
+    const before = new Set(s.getQueue());
+    if (eligible.length && s.addToQueue(eligible)) {
+      for (const c of s.getQueue()) if (!before.has(c)) queued.add(c);
+    }
+  }
+  return { queued: queued.size, skippedEverywhere };
 }
 
 // ── Thread detection ─────────────────────────────────────────────────────────
@@ -410,26 +431,8 @@ async function scanSubreddit({ sourceKey, detectFn, getThreadId, getTriedState, 
 
   const candidates = [...allCodes].filter(c => !triedSet.has(c)).sort();
 
-  // Skip codes already sitting on the account (applied within the last
-  // ~2 weeks — success or region_skip). After the monthly reset wipes
-  // tried_codes, last cycle's wins would otherwise be re-queued and burn an
-  // apply slot on "Oops, you already applied this promotion". They are NOT
-  // added to tried_codes, so once the window passes they become eligible again.
-  const recentlyApplied = state.getRecentlyApplied();
-  const newCodes = candidates.filter(c => !recentlyApplied.has(c));
-  const skippedApplied = candidates.filter(c => recentlyApplied.has(c));
-  const alreadyNoted = new Set(triedState.skipped_applied || []);
-  const newlySkipped = skippedApplied.filter(c => !alreadyNoted.has(c));
-  if (newlySkipped.length) {
-    state.appendLog({
-      type: 'applied_skip', source: label, codes: newlySkipped,
-      note: `already on the account (applied < ${cfg.REAPPLY_SKIP_DAYS}d ago)`,
-    });
-  }
-  triedState.skipped_applied = [...new Set([...alreadyNoted, ...skippedApplied])];
-
   const sourceUrl = `https://www.reddit.com/r/${subreddit}/comments/${newestEntry.id}/`;
-  const entriesToQueue = newCodes.map(code => {
+  const entriesToQueue = candidates.map(code => {
     const ctx = codeContext.get(code) || {};
     // Read the comment(s) this code appeared in for a region restriction.
     const region = detectRegionRestriction(ctx.context);
@@ -452,11 +455,26 @@ async function scanSubreddit({ sourceKey, detectFn, getThreadId, getTriedState, 
     });
   });
 
+  // Codes already sitting on an account (applied within ~2 weeks) are skipped
+  // for that account. After the monthly reset, last cycle's wins would
+  // otherwise be re-queued and burn an apply slot on "Oops, you already
+  // applied this promotion". A code every account skipped is NOT marked as
+  // seen, so once the window passes it becomes eligible again.
+  const { queued: added, skippedEverywhere } = queueForAccounts(entriesToQueue);
+  const newCodes = candidates.filter(c => !skippedEverywhere.has(c));
+  const alreadyNoted = new Set(triedState.skipped_applied || []);
+  const newlySkipped = [...skippedEverywhere].filter(c => !alreadyNoted.has(c));
+  if (newlySkipped.length) {
+    state.appendLog({
+      type: 'applied_skip', source: label, codes: newlySkipped,
+      note: `already on the account (applied < ${cfg.REAPPLY_SKIP_DAYS}d ago)`,
+    });
+  }
+  triedState.skipped_applied = [...new Set([...alreadyNoted, ...skippedEverywhere])];
   triedState.thread_id = newestEntry.id;
   triedState.tried_codes = [...new Set([...triedSet, ...newCodes])];
   saveTriedState(triedState);
 
-  const added = state.addToQueue(entriesToQueue);
   setSourceStatus(sourceKey, {
     status: 'ok',
     note: `${comments.length} comments scanned`,
@@ -568,19 +586,8 @@ async function scanUSCF({ onProgress } = {}) {
   const codeContext = extractCodesWithContext(comments);
   const found = [...codeContext.keys()];
 
-  // Same skips as Reddit: codes already on the account (14-day ledger), plus
-  // anything already queued or tried this cycle — the forum often reposts
-  // codes the Reddit threads carried first, and those keep their attribution.
-  const recentlyApplied = state.getRecentlyApplied();
-  const skippedApplied = found.filter(c => recentlyApplied.has(c));
-  if (skippedApplied.length) {
-    state.appendLog({ type: 'applied_skip', source: label, codes: skippedApplied, note: `already on the account (applied < ${cfg.REAPPLY_SKIP_DAYS}d ago)` });
-  }
-  const known = new Set([...state.getQueue(), ...state.getProcessed().map(r => r.code)]);
-  const candidates = found.filter(c => !recentlyApplied.has(c) && !known.has(c)).sort();
-
   const nowIso = new Date().toISOString();
-  const entries = candidates.map(code => {
+  const entries = found.sort().map(code => {
     const ctx = codeContext.get(code) || {};
     const region = detectRegionRestriction(ctx.context);
     return buildCodeEntry(code, {
@@ -597,7 +604,13 @@ async function scanUSCF({ onProgress } = {}) {
       regionNote: region ? region.note : null,
     });
   });
-  const added = entries.length ? state.addToQueue(entries) : 0;
+  // Same skips as Reddit, per account: codes applied in the last 14 days, and
+  // anything already queued or tried this cycle — the forum often reposts
+  // codes the Reddit threads carried first, and those keep their attribution.
+  const { queued: added, skippedEverywhere } = entries.length ? queueForAccounts(entries) : { queued: 0, skippedEverywhere: new Set() };
+  if (skippedEverywhere.size) {
+    state.appendLog({ type: 'applied_skip', source: label, codes: [...skippedEverywhere], note: `already on the account (applied < ${cfg.REAPPLY_SKIP_DAYS}d ago)` });
+  }
 
   // Every post this read covered — including old, deleted and codeless ones —
   // is done; older unseen posts stay pending for the next scans.
@@ -612,13 +625,13 @@ async function scanUSCF({ onProgress } = {}) {
     status: 'ok',
     note: (posts.length ? `${posts.length} new post${posts.length === 1 ? '' : 's'} scanned` : 'No new posts since last scan')
       + (pending.length ? ` · ${pending.length} older post${pending.length === 1 ? '' : 's'} next scan` : ''),
-    usableCodes: candidates.length,
+    usableCodes: added,
     queued: added,
     sourceUrl: topicUrl,
   });
-  state.appendLog({ type: 'forum_check_done', source: label, posts_scanned: posts.length, codes_found: found.length, new_codes: candidates.length, queued: added, ...(pending.length ? { pending: pending.length } : {}) });
-  onProgress?.({ source: label, step: 'done', commentsScanned: posts.length, newCodes: candidates.length, queued: added });
-  return { threadId: `topic ${cfg.USCF_TOPIC_ID}`, commentsScanned: posts.length, codesFound: found.length, newCodes: candidates.length, queued: added };
+  state.appendLog({ type: 'forum_check_done', source: label, posts_scanned: posts.length, codes_found: found.length, new_codes: added, queued: added, ...(pending.length ? { pending: pending.length } : {}) });
+  onProgress?.({ source: label, step: 'done', commentsScanned: posts.length, newCodes: added, queued: added });
+  return { threadId: `topic ${cfg.USCF_TOPIC_ID}`, commentsScanned: posts.length, codesFound: found.length, newCodes: added, queued: added };
 }
 
 // Monthly threads are usually posted on the 1st, but a 1–2 day delay is normal,
@@ -734,5 +747,6 @@ module.exports = {
   isMonthlyPromoSlug,
   isNewerThread,
   threadMonth,
+  queueForAccounts,
   fetchComments,
 };

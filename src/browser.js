@@ -15,8 +15,11 @@ const { execFileSync } = require('child_process');
 const cfg = require('./config');
 
 let _context = null;
+let _profile = null;             // profile directory of the open context
 let _launching = null;
+let _launchingProfile = null;
 let _closing = null;
+let _switching = null;
 let _lease = null;               // { kind, since, token }
 const _readPages = new Set();    // pages opened by source reads
 
@@ -69,13 +72,39 @@ async function visibleWithin(locator, ms) {
 // Only one Chrome may run on the profile. Concurrent launches share one
 // in-flight promise, and a launch waits for any in-flight close (the old
 // Chrome holds the profile lock until it exits).
-async function getBrowserContext() {
+//
+// Each account has its own profile; one Chrome runs at a time. `profileDir`
+// asks for a specific account's profile (switching if another is open);
+// without it — source reads — whatever profile is open is used, since reads
+// need no login.
+async function getBrowserContext(profileDir = null) {
   if (_closing) await _closing;
-  if (_context) return _context;
+  if (_switching) await _switching;
+  const want = profileDir || _profile || _launchingProfile || cfg.BROWSER_PROFILE_DIR;
+  if (_launching) {
+    if (_launchingProfile === want) return _launching;
+    try { await _launching; } catch {}
+  }
+  if (_context && _profile === want) return _context;
+  if (_context) {
+    // Another account's Chrome is open: let in-flight source reads finish
+    // (they have their own deadlines), then close it.
+    if (!_switching) {
+      _switching = (async () => {
+        const until = Date.now() + 180000;
+        while (_readPages.size && Date.now() < until) await new Promise(r => setTimeout(r, 500));
+        await closeBrowser();
+      })().finally(() => { _switching = null; });
+    }
+    await _switching;
+    return getBrowserContext(profileDir);
+  }
   if (!_launching) {
+    _launchingProfile = want;
     _launching = (async () => {
       const { chromium } = require('playwright');
-      const ctx = await chromium.launchPersistentContext(cfg.BROWSER_PROFILE_DIR, {
+      fs.mkdirSync(want, { recursive: true });
+      const ctx = await chromium.launchPersistentContext(want, {
         channel: 'chrome',
         headless: false,
         chromiumSandbox: true,   // keeps Playwright from adding --no-sandbox
@@ -89,8 +118,9 @@ async function getBrowserContext() {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       });
       _context = ctx;
+      _profile = want;
       return ctx;
-    })().finally(() => { _launching = null; });
+    })().finally(() => { _launching = null; _launchingProfile = null; });
   }
   return _launching;
 }
@@ -98,32 +128,34 @@ async function getBrowserContext() {
 // Open a new page, surviving a dead cached context: context.pages() never
 // notices that Chrome quit, so newPage() is the liveness check, and a closed
 // or wedged context is relaunched once.
-async function getPage() {
-  const ctx = await getBrowserContext();
+async function getPage(profileDir = null) {
+  const ctx = await getBrowserContext(profileDir);
   try {
     return await withDeadline(ctx.newPage(), 30000, 'Opening a browser page');
   } catch (err) {
     if (!/closed|deadline/i.test(err.message)) throw err;
     if (_context === ctx) await closeBrowser();
-    const fresh = await getBrowserContext();
+    const fresh = await getBrowserContext(profileDir);
     return await withDeadline(fresh.newPage(), 30000, 'Opening a browser page');
   }
 }
 
-// Last resort when Chrome won't close: SIGKILL every process running on the
-// app's profile, so the profile lock is released and the next launch works.
-function killProfileChrome() {
-  try { execFileSync('pkill', ['-9', '-f', cfg.BROWSER_PROFILE_DIR]); } catch {}
+// Last resort when Chrome won't close: SIGKILL every process running on that
+// profile, so its lock is released and the next launch works.
+function killProfileChrome(profileDir) {
+  try { execFileSync('pkill', ['-9', '-f', profileDir]); } catch {}
 }
 
 async function closeBrowser() {
   if (_launching) { try { await withDeadline(_launching, 200000, 'Browser launch'); } catch {} } // never orphan a Chrome mid-launch
   const ctx = _context;
+  const profileDir = _profile;
   if (!ctx) return;
   _context = null; // detach first: new callers wait on _closing, then relaunch
+  _profile = null;
   _readPages.clear();
   _closing = withDeadline(ctx.close(), 20000, 'Closing the browser')
-    .catch(() => killProfileChrome())
+    .catch(() => killProfileChrome(profileDir))
     .finally(() => { _closing = null; });
   await _closing;
 }
@@ -161,13 +193,14 @@ async function closeReadPages() {
 async function recycleIfIdle() {
   // All checks are synchronous and closeBrowser detaches before its first
   // await, so nothing can claim the browser between the check and the close.
-  if (_lease || _launching || !_context || _readPages.size) return false;
+  if (_lease || _launching || _switching || !_context || _readPages.size) return false;
   await closeBrowser();
   return true;
 }
 
-// The open browser context (null when Chrome isn't running).
+// The open browser context (null when Chrome isn't running), and its profile.
 function currentContext() { return _context; }
+function currentProfile() { return _profile; }
 
 async function saveDebugScreenshot(page, prefix) {
   try {
@@ -181,5 +214,5 @@ module.exports = {
   acquire, forceRelease, holder, isBusy,
   withDeadline, visibleWithin,
   getBrowserContext, getPage, closeBrowser, closePageHard, withPage, closeReadPages,
-  recycleIfIdle, currentContext, saveDebugScreenshot,
+  recycleIfIdle, currentContext, currentProfile, saveDebugScreenshot,
 };

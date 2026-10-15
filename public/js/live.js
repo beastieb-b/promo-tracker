@@ -34,7 +34,8 @@ export function begin(type, text) {
   if (text) line(text);
 }
 
-export function line(text, cls = '') {
+/** Append a line; `account` (several accounts on) is shown as a prefix tag. */
+export function line(text, cls = '', account = '') {
   const c = card();
   const log = $('live-log');
   if (!c || !log) return;
@@ -45,8 +46,15 @@ export function line(text, cls = '') {
   ts.className = 'live-log-ts';
   ts.textContent = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   const msg = document.createElement('span');
-  msg.textContent = text;
-  row.append(ts, msg);
+  msg.textContent = account ? String(text).trim() : text;
+  row.append(ts);
+  if (account) {
+    const who = document.createElement('span');
+    who.className = 'live-log-account';
+    who.textContent = account;
+    row.append(who);
+  }
+  row.append(msg);
   log.appendChild(row);
   while (log.childElementCount > 300) log.firstElementChild.remove();
   log.scrollTop = log.scrollHeight;
@@ -91,6 +99,14 @@ export function redditProgress(d) {
   line(msgs[d.step] || `${src}: ${d.step}`, cls);
 }
 
+// apply_progress carries `account: { id, name }` while several accounts are on.
+function progressAccount(d) {
+  const a = d.account;
+  if (!a) return '';
+  if (typeof a === 'object') return String(a.name || a.id || '');
+  return String(d.accountName || a);
+}
+
 export function applyProgress(d) {
   begin('apply');
   const code = d.code ?? '';
@@ -117,5 +133,5 @@ export function applyProgress(d) {
     case 'unknown': msg = `❓ ${code} — result unclear${d.detail ? ` (${d.detail})` : ''}`; cls = 'waiting'; break;
     default: msg = `${code}: ${d.status}`;
   }
-  line(msg, cls);
+  line(msg, cls, progressAccount(d));
 }

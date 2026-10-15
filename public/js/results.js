@@ -7,6 +7,7 @@ import { onAction } from './actions.js';
 import { showToast, deferWithUndo } from './toast.js';
 import { loadProcessed, loadStats, loadQueue, quiet } from './data.js';
 import { isVisible } from './router.js';
+import { ALL, isMulti, accountName, accountQuery, accountTag, viewOf, rowKey, rowFocus } from './scope.js';
 import {
   $, escapeHtml as esc, cssToken, externalLink, sourceLink, timeAgo, formatDateTime,
   platformName, patchHTML, setText, resultIcon, resultLabel,
@@ -17,16 +18,21 @@ const FILTER_NAMES = { all: '', success: 'success ', rejected: 'rejected ', regi
 
 export function initResults() {
   subscribe('processed', renderResults);
+  subscribe('stats', renderResults);   // account names / the setting may have changed
 
   onAction('click', 'filter', (e, el) => setFilter(el.dataset.filter));
   onAction('input', 'search-results', (e, el) => {
     state.search = (el.value || '').trim().toUpperCase();
     renderResults();
   });
-  onAction('click', 'delete-result', (e, el) => deleteResult(el.dataset.code));
-  onAction('click', 'retry-result', (e, el) => requeueResult(el.dataset.code, el));
-  onAction('click', 'reclassify', (e, el) => reclassify(el.dataset.code, el.dataset.result, el));
+  // Row actions always use the row's own account, never the switcher's.
+  onAction('click', 'delete-result', (e, el) => deleteResult(el.dataset.code, el.dataset.account));
+  onAction('click', 'retry-result', (e, el) => requeueResult(el.dataset.code, el.dataset.account, el));
+  onAction('click', 'reclassify', (e, el) => reclassify(el.dataset.code, el.dataset.result, el.dataset.account, el));
 }
+
+/** " for Partner" after a code in toasts (nothing with the setting off). */
+const forAccount = account => (isMulti() && account ? ` for ${accountName(account)}` : '');
 
 function setFilter(filter) {
   state.filter = FILTERS.includes(filter) ? filter : 'all';
@@ -39,7 +45,7 @@ function setFilter(filter) {
 }
 
 function visible() {
-  return state.processed.filter(r => r && !state.hidden.processed.has(r.code));
+  return state.processed.filter(r => r && !state.hidden.processed.has(rowKey(r)));
 }
 
 export function renderResults() {
@@ -61,12 +67,16 @@ export function renderResults() {
     patchHTML(tbody, `<tr><td colspan="6" class="empty-state">${msg}</td></tr>`);
     return;
   }
-  patchHTML(tbody, rows.slice().reverse().map(rowHtml).join(''));
+  const view = viewOf(state.processedScope);
+  patchHTML(tbody, rows.slice().reverse().map(r => rowHtml(r, view)).join(''));
 }
 
-function rowHtml(r) {
+function rowHtml(r, view) {
   const code = String(r.code ?? '');
   const c = esc(code);
+  const fk = esc(rowFocus(r));
+  const acct = `data-account="${esc(r.account || '')}"`;
+  const who = esc(forAccount(view === ALL ? r.account : ''));
   const link = sourceLink(r);
   const label = r.sourceLabel || 'Manual';
   const sourceHtml = link ? externalLink(link.href, `${label} ↗`, { title: link.title }) : esc(label);
@@ -83,16 +93,16 @@ function rowHtml(r) {
 
   const actions = [];
   if (r.result === 'success') {
-    actions.push(`<button type="button" class="result-action-btn" data-action="reclassify" data-result="region_skip" data-code="${c}" data-focus-key="rl-${c}" title="Mark region-locked (doesn't count toward total)" aria-label="Mark ${c} as region-locked">📍</button>`);
+    actions.push(`<button type="button" class="result-action-btn" data-action="reclassify" data-result="region_skip" data-code="${c}" ${acct} data-focus-key="rl-${fk}" title="Mark region-locked (doesn't count toward total)" aria-label="Mark ${c} as region-locked${who}">📍</button>`);
   } else if (r.result === 'region_skip') {
-    actions.push(`<button type="button" class="result-action-btn" data-action="reclassify" data-result="success" data-code="${c}" data-focus-key="rs-${c}" title="Count as savings (it works here)" aria-label="Count ${c} as savings">✓$</button>`);
+    actions.push(`<button type="button" class="result-action-btn" data-action="reclassify" data-result="success" data-code="${c}" ${acct} data-focus-key="rs-${fk}" title="Count as savings (it works here)" aria-label="Count ${c} as savings${who}">✓$</button>`);
   } else if (['rejected', 'error', 'unknown'].includes(r.result)) {
-    actions.push(`<button type="button" class="result-retry-btn" data-action="retry-result" data-code="${c}" data-focus-key="rr-${c}" title="Add back to the queue to try again" aria-label="Retry ${c}">↻<span class="btn-label"> Retry</span></button>`);
+    actions.push(`<button type="button" class="result-retry-btn" data-action="retry-result" data-code="${c}" ${acct} data-focus-key="rr-${fk}" title="Add back to the queue to try again" aria-label="Retry ${c}${who}">↻<span class="btn-label"> Retry</span></button>`);
   }
-  actions.push(`<button type="button" class="result-delete-btn" data-action="delete-result" data-code="${c}" data-focus-key="rd-${c}" title="Delete" aria-label="Delete the result for ${c}">✕</button>`);
+  actions.push(`<button type="button" class="result-delete-btn" data-action="delete-result" data-code="${c}" ${acct} data-focus-key="rd-${fk}" title="Delete" aria-label="Delete the result for ${c}${who}">✕</button>`);
 
   return `<tr class="result-row">
-    <td class="result-code" data-label="Code"><div class="result-code-stack"><button type="button" class="result-code-value copyable" data-action="copy-code" data-code="${c}" data-focus-key="rc-${c}" title="Click to copy">${c}</button></div></td>
+    <td class="result-code" data-label="Code"><div class="result-code-stack"><button type="button" class="result-code-value copyable" data-action="copy-code" data-code="${c}" data-focus-key="rc-${fk}" title="Click to copy">${c}</button>${accountTag(r, view)}</div></td>
     <td class="result-source" data-label="Source"><div class="result-source-label">${sourceHtml}</div><div class="result-submeta">${esc(r.statusHint || r.sourceTitle || '—')}</div></td>
     <td data-label="Result"><span class="result-badge ${cssToken(r.result)}">${resultIcon(r.result)} ${esc(resultLabel(r.result))}</span>${amount}${platform}</td>
     <td class="result-detail" data-label="Details"><div>${esc(detail)}</div>${regionNote}</td>
@@ -101,26 +111,27 @@ function rowHtml(r) {
   </tr>`;
 }
 
-function deleteResult(code) {
-  if (!code || state.hidden.processed.has(code)) return;
-  state.hidden.processed.add(code);
+function deleteResult(code, account) {
+  const key = rowKey({ code, account });
+  if (!code || state.hidden.processed.has(key)) return;
+  state.hidden.processed.add(key);
   publish('processed');
   deferWithUndo({
-    message: `Deleted ${code}`,
+    message: `Deleted ${code}${forAccount(account)}`,
     onUndo: () => {
-      state.hidden.processed.delete(code);
+      state.hidden.processed.delete(key);
       publish('processed');
     },
     commit: async ({ keepalive }) => {
       try {
-        const res = await api('DELETE', `/api/processed/${encodeURIComponent(code)}`, undefined, { keepalive });
+        const res = await api('DELETE', `/api/processed/${encodeURIComponent(code)}${accountQuery(account)}`, undefined, { keepalive });
         if (!res.deleted) showToast(`${code} was already gone`);
-        state.processed = state.processed.filter(r => r.code !== code);
-        state.hidden.processed.delete(code);
+        state.processed = state.processed.filter(r => rowKey(r) !== key);
+        state.hidden.processed.delete(key);
         publish('processed');
         quiet(loadStats);
       } catch (err) {
-        state.hidden.processed.delete(code);
+        state.hidden.processed.delete(key);
         publish('processed');
         reportError(err, `Couldn't delete ${code}`);
       }
@@ -128,12 +139,12 @@ function deleteResult(code) {
   });
 }
 
-async function requeueResult(code, btn) {
+async function requeueResult(code, account, btn) {
   if (!code) return;
   btn.disabled = true;
   try {
-    await api('POST', `/api/processed/${encodeURIComponent(code)}/requeue`);
-    showToast(`${code} added back to the queue — it will be retried on the next run`, 'success');
+    await api('POST', `/api/processed/${encodeURIComponent(code)}/requeue${accountQuery(account)}`);
+    showToast(`${code} added back to the queue${forAccount(account)} — it will be retried on the next run`, 'success');
     await Promise.all([quiet(loadProcessed), quiet(loadStats), isVisible('queue') ? quiet(loadQueue) : null]);
   } catch (err) {
     reportError(err, `Couldn't re-queue ${code}`);
@@ -142,11 +153,11 @@ async function requeueResult(code, btn) {
   }
 }
 
-async function reclassify(code, result, btn) {
+async function reclassify(code, result, account, btn) {
   if (!code || (result !== 'success' && result !== 'region_skip')) return;
   btn.disabled = true;
   try {
-    const res = await api('POST', `/api/processed/${encodeURIComponent(code)}/reclassify`, { result });
+    const res = await api('POST', `/api/processed/${encodeURIComponent(code)}/reclassify${accountQuery(account)}`, { result });
     if (!res.updated) {
       showToast(`${code} has no applied result to change`, 'error');
       return;

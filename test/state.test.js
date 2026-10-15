@@ -5,6 +5,8 @@ const { test } = require('node:test');
 const dir = require('./helpers').useTempData();
 const cfg = require('../src/config');
 const state = require('../src/state');
+const stats = require('../src/stats');
+const S = () => require('../src/store').main();
 const { monthKey } = require('../src/time');
 
 function reset() {
@@ -33,7 +35,7 @@ test('getRecentlyApplied: only codes inside the window', () => {
     OLD: new Date(now - 15 * day).toISOString(),
     BROKEN: 'not-a-date',
   };
-  const recent = state.getRecentlyApplied(cfg.REAPPLY_SKIP_DAYS, ledger, now);
+  const recent = S().getRecentlyApplied(cfg.REAPPLY_SKIP_DAYS, ledger, now);
   assert.ok(recent.has('FRESH'));
   assert.ok(recent.has('EDGE'));
   assert.ok(!recent.has('OLD'));
@@ -52,40 +54,40 @@ test('computeThreadState: found / waiting / stale / unknown', () => {
 
 test('queue: hand-added codes first, then codes with digits, then confidence', () => {
   reset();
-  state.addToQueue([
+  S().addToQueue([
     { code: 'WORDYCODE', confidenceScore: 90 },
     { code: 'SAVE20', confidenceScore: 60 },
     { code: 'TACO10', confidenceScore: 80 },
   ]);
-  state.addToQueue([{ code: 'BURGERNOW', manual: true }]);
-  assert.deepStrictEqual(state.getQueueDetails().map(e => [e.code, e.priority]),
+  S().addToQueue([{ code: 'BURGERNOW', manual: true }]);
+  assert.deepStrictEqual(S().getQueueDetails().map(e => [e.code, e.priority]),
     [['BURGERNOW', 1], ['TACO10', 2], ['SAVE20', 3], ['WORDYCODE', 4]]);
-  state.markResult('BURGERNOW', 'rejected', 'Code not valid');
-  assert.strictEqual(state.getCodeCatalog().codes.BURGERNOW.manual, false);
+  S().markResult('BURGERNOW', 'rejected', 'Code not valid');
+  assert.strictEqual(S().getFlags('BURGERNOW').manual, false);
 });
 
 test('deleteResult forgets the code everywhere, including the applied ledger', () => {
   reset();
-  state.addToQueue(['WIN2026']);
-  state.markResult('WIN2026', 'success', '$10 off');
-  assert.ok(state.getRecentlyApplied().has('WIN2026'));
-  assert.strictEqual(state.deleteResult('WIN2026'), true);
-  assert.ok(!state.getRecentlyApplied().has('WIN2026'));
-  assert.deepStrictEqual(state.getProcessed(), []);
-  assert.strictEqual(state.deleteResult('WIN2026'), false);
+  S().addToQueue(['WIN2026']);
+  S().markResult('WIN2026', 'success', '$10 off');
+  assert.ok(S().getRecentlyApplied().has('WIN2026'));
+  assert.strictEqual(S().deleteResult('WIN2026'), true);
+  assert.ok(!S().getRecentlyApplied().has('WIN2026'));
+  assert.deepStrictEqual(S().getProcessed(), []);
+  assert.strictEqual(S().deleteResult('WIN2026'), false);
 });
 
 test('reclassify rebuilds the detail from the amount and keeps the platform', () => {
   reset();
-  state.addToQueue(['UE15']);
-  state.markResult('UE15', 'success', '$15 off · UberEats');
-  state.reclassifyResult('UE15', 'region_skip');
-  let row = state.getProcessedDetails()[0];
+  S().addToQueue(['UE15']);
+  S().markResult('UE15', 'success', '$15 off · UberEats');
+  S().reclassifyResult('UE15', 'region_skip');
+  let row = S().getProcessedDetails()[0];
   assert.strictEqual(row.result, 'region_skip');
   assert.strictEqual(row.detail, '$15 off — region-locked · UberEats');
   assert.strictEqual(row.platform, 'ubereats');
-  state.reclassifyResult('UE15', 'success');
-  row = state.getProcessedDetails()[0];
+  S().reclassifyResult('UE15', 'success');
+  row = S().getProcessedDetails()[0];
   assert.strictEqual(row.detail, '$15 off · UberEats');
   assert.strictEqual(row.amount, '$15');
 });
@@ -93,16 +95,14 @@ test('reclassify rebuilds the detail from the amount and keeps the platform', ()
 test('monthly reset: archives results, keeps codes queued this month, never overwrites an archive', () => {
   reset();
   const now = new Date(2026, 9, 2, 9, 0); // Oct 2, local
-  state.addToQueue(['OLDSEP1', 'NEWOCT1']);
-  const catalog = state.getCodeCatalog();
-  catalog.codes.OLDSEP1.queuedAt = new Date(2026, 8, 29).toISOString();
-  catalog.codes.NEWOCT1.queuedAt = new Date(2026, 9, 1, 8).toISOString();
-  state.saveCodeCatalog(catalog);
+  S().addToQueue(['OLDSEP1', 'NEWOCT1']);
+  S().setFlags('OLDSEP1', { queuedAt: new Date(2026, 8, 29).toISOString() });
+  S().setFlags('NEWOCT1', { queuedAt: new Date(2026, 9, 1, 8).toISOString() });
   fs.writeFileSync(cfg.PROCESSED_FILE, 'SEPWIN\tsuccess\t$20 off\t2026-09-20T18:00:00.000Z\n');
 
   state.monthlyReset('aaa111', 'bbb222', '2026-10', now);
-  assert.deepStrictEqual(state.getQueue(), ['NEWOCT1']);
-  assert.deepStrictEqual(state.getProcessed(), []);
+  assert.deepStrictEqual(S().getQueue(), ['NEWOCT1']);
+  assert.deepStrictEqual(S().getProcessed(), []);
   assert.strictEqual(state.getThreadId(), 'bbb222');
 
   // A second reset the same day from the same old thread must not clobber
@@ -124,7 +124,7 @@ test('savings follow the calendar month of each win, wherever it is archived', (
   ].join('\n') + '\n';
   fs.writeFileSync(path.join(cfg.ARCHIVE_DIR, '2026-01-01-xyz-processed.txt'), archived);
   fs.writeFileSync(cfg.PROCESSED_FILE, `B1\tsuccess\t$10 off\t${now.toISOString()}\nB2\tsuccess\tAlready applied\t${now.toISOString()}\nB3\tregion_skip\t$50 off — Las Vegas only\t${now.toISOString()}\n`);
-  const s = state.getSavingsSummary(now);
+  const s = S().getSavingsSummary(now);
   assert.strictEqual(s.currentMonth, thisMonth);
   assert.strictEqual(s.savedThisMonth, 15);
   assert.strictEqual(s.savedOnUberEats, 5);
@@ -135,17 +135,17 @@ test('savings follow the calendar month of each win, wherever it is archived', (
 
 test('savedLastMonth is null when there is no earlier history', () => {
   reset();
-  assert.strictEqual(state.getSavingsSummary().savedLastMonth, null);
+  assert.strictEqual(S().getSavingsSummary().savedLastMonth, null);
 });
 
 test('stats rows carry platform, amount and location', () => {
   reset();
-  state.addToQueue(['LV10', 'UE20', 'OLD1']);
-  state.markResult('LV10', 'region_skip', '$10 off — Las Vegas only');
-  state.markResult('UE20', 'success', '$20 off · UberEats');
-  state.markResult('OLD1', 'success', 'Already applied');
-  const st = state.getStats();
-  assert.deepStrictEqual(st.regionLockedList[0], { code: 'LV10', detail: '$10 off — Las Vegas only', platform: 'postmates', amount: '$10', location: 'Las Vegas' });
+  S().addToQueue(['LV10', 'UE20', 'OLD1']);
+  S().markResult('LV10', 'region_skip', '$10 off — Las Vegas only');
+  S().markResult('UE20', 'success', '$20 off · UberEats');
+  S().markResult('OLD1', 'success', 'Already applied');
+  const st = stats.getStats([S()]);
+  assert.deepStrictEqual(st.regionLockedList[0], { code: 'LV10', detail: '$10 off — Las Vegas only', platform: 'postmates', amount: '$10', location: 'Las Vegas', account: 'main', accountName: 'Account 1' });
   assert.strictEqual(st.successList.find(r => r.code === 'UE20').platform, 'ubereats');
   assert.strictEqual(st.successList.find(r => r.code === 'OLD1').already, true);
   assert.strictEqual(st.successCount, 1);
@@ -163,7 +163,7 @@ test('stats count this calendar month, across a monthly reset, one row per code'
     `LASTMO\tsuccess\t$20 off\t${prevMonth}`,
   ].join('\n') + '\n');
   fs.writeFileSync(cfg.PROCESSED_FILE, `WON1\tsuccess\tAlready applied\t${now.toISOString()}\nNEW2\tsuccess\t$5 off · UberEats\t${now.toISOString()}\n`);
-  const st = state.getStats();
+  const st = stats.getStats([S()]);
   assert.strictEqual(st.totalTried, 3);                       // WON1, GONE1, NEW2 (not last month's)
   assert.strictEqual(st.successCount, 2);                     // WON1 keeps its $15 win, NEW2
   assert.strictEqual(st.alreadyOnAccountCount, 0);
@@ -182,11 +182,11 @@ test('results archived earlier this month stay visible and can be corrected or d
   fs.writeFileSync(archive, `EARLY1\tsuccess\t$15 off\t${early}\nEARLY1\tsuccess\t$9 off\t${lastMonth}\nGONE2\trejected\tCode not valid\t${early}\n`);
   fs.writeFileSync(cfg.PROCESSED_FILE, `NOW3\tsuccess\t$5 off\t${now.toISOString()}\n`);
 
-  assert.deepStrictEqual(state.getProcessedDetails().map(r => [r.code, !!r.archived]), [['EARLY1', true], ['GONE2', true], ['NOW3', false]]);
-  assert.strictEqual(state.reclassifyResult('EARLY1', 'region_skip'), true);
-  assert.strictEqual(state.getStats().savedThisMonth, 5, 'the region-locked early win no longer counts');
+  assert.deepStrictEqual(S().getProcessedDetails().map(r => [r.code, !!r.archived]), [['EARLY1', true], ['GONE2', true], ['NOW3', false]]);
+  assert.strictEqual(S().reclassifyResult('EARLY1', 'region_skip'), true);
+  assert.strictEqual(stats.getStats([S()]).savedThisMonth, 5, 'the region-locked early win no longer counts');
   assert.match(fs.readFileSync(archive, 'utf8'), /EARLY1\tsuccess\t\$9 off/, 'last month\'s row is untouched');
-  assert.strictEqual(state.reclassifyResult('GONE2', 'success'), false, 'a rejection is not a win to recount');
-  assert.strictEqual(state.deleteResult('GONE2'), true);
-  assert.deepStrictEqual(state.getProcessedDetails().map(r => r.code), ['EARLY1', 'NOW3']);
+  assert.strictEqual(S().reclassifyResult('GONE2', 'success'), false, 'a rejection is not a win to recount');
+  assert.strictEqual(S().deleteResult('GONE2'), true);
+  assert.deepStrictEqual(S().getProcessedDetails().map(r => r.code), ['EARLY1', 'NOW3']);
 });

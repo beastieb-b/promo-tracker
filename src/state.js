@@ -1,8 +1,7 @@
 const fs = require('fs');
-const path = require('path');
 const cfg = require('./config');
 const { writeFileAtomic } = require('./atomic');
-const { monthKey, previousMonthKey, monthStartMs, dateKey } = require('./time');
+const { monthKey } = require('./time');
 
 function ensureDirs() {
   [cfg.DATA_DIR, cfg.ARCHIVE_DIR, cfg.BROWSER_PROFILE_DIR].forEach(d => {
@@ -18,11 +17,7 @@ function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
 }
 
-// ── Queue (codes waiting to be applied) ─────────────────────────────────────
-
-function getQueue() {
-  return (readText(cfg.QUEUE_FILE) || '').split('\n').map(l => l.trim()).filter(Boolean);
-}
+// ── Codes & catalog (shared by every account) ────────────────────────────────
 
 function normalizeCode(code) {
   if (typeof code !== 'string') return null;
@@ -63,69 +58,7 @@ function setSourceStatus(sourceKey, status = {}) {
   saveCodeCatalog(catalog);
 }
 
-function addToQueue(entries) {
-  const existing = new Set(getQueue());
-  const processed = new Set(getProcessed().map(r => r.code));
-  const catalog = getCodeCatalog();
-  const deduped = new Map();
-  for (const raw of entries) {
-    const entry = typeof raw === 'string' ? { code: raw } : raw;
-    const code = normalizeCode(entry && entry.code);
-    if (code) deduped.set(code, { ...entry, code });
-  }
-  const newEntries = [...deduped.values()].filter(e => !existing.has(e.code) && !processed.has(e.code));
-  if (!newEntries.length) return 0;
-  // Only NEW codes get catalog metadata: a second sighting (another thread, or
-  // the forum) must not overwrite the first source's attribution and link.
-  const now = new Date().toISOString();
-  for (const entry of newEntries) {
-    catalog.codes[entry.code] = {
-      ...(catalog.codes[entry.code] || {}),
-      ...entry,
-      code: entry.code,
-      queuedAt: now,
-      updatedAt: now,
-    };
-  }
-  saveCodeCatalog(catalog);
-  fs.appendFileSync(cfg.QUEUE_FILE, newEntries.map(e => e.code).join('\n') + '\n');
-  return newEntries.length;
-}
-
-function writeQueue(codes) {
-  writeFileAtomic(cfg.QUEUE_FILE, codes.join('\n') + (codes.length ? '\n' : ''));
-}
-
-function removeFromQueue(code) {
-  const normalized = normalizeCode(code);
-  if (!normalized) return false;
-  const queue = getQueue();
-  if (!queue.includes(normalized)) return false;
-  writeQueue(queue.filter(c => c !== normalized));
-  return true;
-}
-
-// Order in which an apply run tries queued codes: codes added by hand first,
-// then codes containing digits (far more likely to be real promo codes than a
-// stray word), then higher confidence, then most recently seen. Nothing is
-// ever skipped — lower-ranked codes are simply tried on later runs.
-function rankQueue(entries) {
-  return entries
-    .map(e => ({
-      e,
-      score: (e.manual ? 2000 : 0) + (/\d/.test(e.code) ? 1000 : 0) + (Number(e.confidenceScore) || 0),
-      seen: Date.parse(e.lastSeenAt || '') || 0,
-    }))
-    .sort((a, b) => (b.score - a.score) || (b.seen - a.seen))
-    .map(({ e }, i) => ({ ...e, priority: i + 1 }));
-}
-
-function getQueueDetails() {
-  const catalog = getCodeCatalog();
-  return rankQueue(getQueue().map(code => ({ ...(catalog.codes[code] || {}), code })));
-}
-
-// ── Processed results ────────────────────────────────────────────────────────
+// ── Result rows (parsing helpers; each account's results live in store.js) ────
 // processed.txt: CODE\tresult\tdetail\ttimestamp (legacy rows: CODE:result)
 
 function parseProcessedLine(line) {
@@ -141,10 +74,6 @@ function parseProcessedLine(line) {
 function readProcessedFile(file) {
   return (readText(file) || '').split('\n').map(l => l.trim()).filter(Boolean)
     .map(parseProcessedLine).filter(Boolean);
-}
-
-function getProcessed() {
-  return readProcessedFile(cfg.PROCESSED_FILE);
 }
 
 // "$20" from "$20 off", "10%" from "10% off"; null when there's no amount.
@@ -176,150 +105,6 @@ function platformOf(row) {
 
 const isAlreadyApplied = (r) => /^Already applied/.test(r.detail || '');
 
-// Results shown on the dashboard: this cycle's processed.txt plus anything a
-// monthly reset already archived from the current calendar month (so a reset
-// on the 3rd doesn't hide the 1st and 2nd). Oldest first.
-function getProcessedDetails(now = new Date()) {
-  const catalog = getCodeCatalog();
-  const month = monthKey(now);
-  const archived = archiveData().rows
-    .filter(r => r.ts && monthKey(r.ts) === month)
-    .map(r => ({ ...r, archived: true }));
-  const rows = [...archived, ...getProcessed()]
-    .sort((a, b) => (a.ts || '') < (b.ts || '') ? -1 : (a.ts || '') > (b.ts || '') ? 1 : 0);
-  return rows.map(item => {
-    const row = { ...(catalog.codes[item.code] || {}), ...item };
-    return {
-      ...row,
-      platform: platformOf(row),
-      amount: isAlreadyApplied(row) ? null : amountOf(row.detail),
-      location: row.result === 'region_skip' ? locationOf(row.detail) : null,
-    };
-  });
-}
-
-// Rewrite one code's result rows wherever the dashboard shows them:
-// processed.txt, plus this calendar month's rows in archive files.
-// fn(row) returns a replacement line, null to delete the row, or undefined to
-// keep it. Returns how many rows fn changed.
-function editResultRows(code, fn, now = new Date()) {
-  const month = monthKey(now);
-  let changed = 0;
-  const editFile = (file, onlyThisMonth) => {
-    const text = readText(file);
-    if (text === null) return false;
-    let touched = false;
-    const out = [];
-    for (const line of text.split('\n').filter(Boolean)) {
-      const row = parseProcessedLine(line.trim());
-      const eligible = row && row.code === code && (!onlyThisMonth || (row.ts && monthKey(row.ts) === month));
-      const next = eligible ? fn(row) : undefined;
-      if (next === undefined) { out.push(line); continue; }
-      touched = true;
-      changed++;
-      if (next !== null) out.push(next);
-    }
-    if (touched) writeFileAtomic(file, out.join('\n') + (out.length ? '\n' : ''));
-    return touched;
-  };
-  editFile(cfg.PROCESSED_FILE, false);
-  let archiveTouched = false;
-  try {
-    for (const f of fs.readdirSync(cfg.ARCHIVE_DIR)) {
-      if (/-processed(-\d+)?\.txt$/.test(f) && editFile(path.join(cfg.ARCHIVE_DIR, f), true)) archiveTouched = true;
-    }
-  } catch {}
-  if (archiveTouched) invalidateArchiveCache();
-  return changed;
-}
-
-// Forget a code entirely: its result row, its tried-state entries and its
-// applied-ledger entry, so the next scan can queue it again.
-function deleteResult(code) {
-  const normalized = normalizeCode(code);
-  if (!normalized) return false;
-
-  const found = editResultRows(normalized, () => null) > 0;
-
-  const tried = getTriedState();
-  tried.tried_codes = (tried.tried_codes || []).filter(c => c !== normalized);
-  tried.successful_codes = (tried.successful_codes || []).filter(c => c !== normalized);
-  tried.failed_codes = (tried.failed_codes || []).filter(c => c !== normalized);
-  tried.skipped_applied = (tried.skipped_applied || []).filter(c => c !== normalized);
-  saveTriedState(tried);
-
-  const ueTried = getUETriedState();
-  ueTried.tried_codes = (ueTried.tried_codes || []).filter(c => c !== normalized);
-  ueTried.skipped_applied = (ueTried.skipped_applied || []).filter(c => c !== normalized);
-  saveUETriedState(ueTried);
-
-  forgetApplied(normalized);
-  return found;
-}
-
-function markResult(code, result, detail = null) {
-  const normalized = normalizeCode(code);
-  if (!normalized) return false;
-  removeFromQueue(normalized);
-  const safeDetail = detail ? String(detail).replace(/[\t\n\r]/g, ' ').slice(0, 120) : '';
-  fs.appendFileSync(cfg.PROCESSED_FILE, `${normalized}\t${result}\t${safeDetail}\t${new Date().toISOString()}\n`);
-  // Success AND region_skip both mean the code landed on the account — record
-  // them so a scan won't re-queue the code while it's still sitting there.
-  if (result === 'success' || result === 'region_skip') recordApplied(normalized);
-  // A hand-added code jumps the queue once, not again if a scan finds it
-  // later; a settled code starts its failure count over if it ever returns.
-  const meta = getCodeCatalog().codes[normalized] || {};
-  if (meta.manual || meta.transientFailures || meta.confirmPending) {
-    mergeCodeMeta(normalized, { manual: false, transientFailures: 0, confirmPending: false });
-  }
-  return true;
-}
-
-// ── Applied-codes ledger ─────────────────────────────────────────────────────
-// Codes that actually landed on the account (success or region_skip), with when.
-// Scans skip re-queueing a code applied within REAPPLY_SKIP_DAYS — e.g. after
-// the monthly reset, last cycle's wins would otherwise be re-tried and burn an
-// apply slot on "Oops, you already applied this promotion". Past the window
-// the code is eligible again (promos do get refreshed).
-
-function loadAppliedLedger() {
-  return readJson(cfg.APPLIED_LEDGER_FILE, {});
-}
-
-function saveAppliedLedger(ledger) {
-  writeFileAtomic(cfg.APPLIED_LEDGER_FILE, JSON.stringify(ledger, null, 2));
-}
-
-function recordApplied(code, ts = new Date().toISOString()) {
-  const ledger = loadAppliedLedger();
-  ledger[code] = ts;
-  // Prune entries old enough that they can never matter again.
-  const cutoff = Date.now() - cfg.REAPPLY_SKIP_DAYS * 2 * 86400000;
-  for (const [c, t] of Object.entries(ledger)) {
-    const ms = new Date(t).getTime();
-    if (isNaN(ms) || ms < cutoff) delete ledger[c];
-  }
-  saveAppliedLedger(ledger);
-}
-
-function forgetApplied(code) {
-  const ledger = loadAppliedLedger();
-  if (!(code in ledger)) return;
-  delete ledger[code];
-  saveAppliedLedger(ledger);
-}
-
-// Set of codes applied within the last `days`. `ledger` is injectable for tests.
-function getRecentlyApplied(days = cfg.REAPPLY_SKIP_DAYS, ledger = loadAppliedLedger(), now = Date.now()) {
-  const cutoff = now - days * 86400000;
-  const out = new Set();
-  for (const [code, ts] of Object.entries(ledger)) {
-    const ms = new Date(ts).getTime();
-    if (!isNaN(ms) && ms >= cutoff) out.add(code);
-  }
-  return out;
-}
-
 // ── USCardForum high-water mark ──────────────────────────────────────────────
 // The forum topic never rolls over (one thread since 2020), so instead of the
 // per-thread tried sets Reddit uses, we remember the newest post id already
@@ -330,38 +115,6 @@ function getUSCFState() {
 
 function saveUSCFState(s) {
   writeFileAtomic(cfg.USCF_STATE_FILE, JSON.stringify(s, null, 2));
-}
-
-// Put a processed code back in the queue to be tried again (the "Retry"
-// action, and Uber Eats retries after a login comes back).
-function requeueResult(code) {
-  const normalized = normalizeCode(code);
-  if (!normalized) return false;
-  deleteResult(normalized);
-  const meta = getCodeCatalog().codes[normalized] || {};
-  addToQueue([{ ...meta, code: normalized }]);
-  return true;
-}
-
-// Correct a processed code's verdict in place (keeps its timestamp): flag a
-// success as region-locked (so it stops counting) or count one back. The
-// detail is rebuilt from the existing amount.
-function reclassifyResult(code, newResult) {
-  const normalized = normalizeCode(code);
-  if (!normalized || !['success', 'region_skip'].includes(newResult)) return false;
-  // Only rows where the code landed (a success or region-locked) flip.
-  const changed = editResultRows(normalized, (row) => {
-    if (row.result !== 'success' && row.result !== 'region_skip') return undefined;
-    const amount = amountOf(row.detail);
-    const suffix = platformOf(row) === 'ubereats' ? ' · UberEats' : '';
-    const detail = newResult === 'region_skip'
-      ? `${amount ? amount + ' off' : 'Applied'} — region-locked${suffix}`
-      : `${amount ? amount + ' off' : 'Applied!'}${suffix}`;
-    return [normalized, newResult, detail, row.ts || new Date().toISOString()].join('\t');
-  });
-  if (!changed) return false;
-  mergeCodeMeta(normalized, { regionRestricted: newResult === 'region_skip' });
-  return true;
 }
 
 // ── Tried codes (codes found in a monthly thread, avoids re-queuing) ─────────
@@ -419,58 +172,21 @@ function getThreadFreshness(now = new Date()) {
 }
 
 // ── Monthly reset ─────────────────────────────────────────────────────────────
-// Called when a NEWER r/postmates monthly thread is detected. Archives this
-// cycle's results and the codes queued before the current calendar month
-// (last month's codes have mostly expired). Codes queued this month — from the
-// r/UberEATS thread, the forum, or by hand — stay queued: the queue is shared
-// by every source, not owned by the r/postmates thread.
-
-function uniqueArchivePath(stamp, threadId, suffix) {
-  const base = `${stamp}-${threadId || 'unknown'}-${suffix}`;
-  let dest = path.join(cfg.ARCHIVE_DIR, `${base}.txt`);
-  for (let n = 2; fs.existsSync(dest); n++) dest = path.join(cfg.ARCHIVE_DIR, `${base}-${n}.txt`);
-  return dest;
-}
+// Called when a NEWER r/postmates monthly thread is detected. Every account
+// archives this cycle's results and the codes it queued before the current
+// calendar month (last month's codes have mostly expired); codes queued this
+// month — from r/UberEATS, the forum, or by hand — stay queued.
 
 function monthlyReset(oldThreadId, newThreadId, newMonth, now = new Date()) {
-  const stamp = dateKey(now);
-  fs.mkdirSync(cfg.ARCHIVE_DIR, { recursive: true });
-
-  try {
-    if (fs.existsSync(cfg.PROCESSED_FILE)) {
-      fs.copyFileSync(cfg.PROCESSED_FILE, uniqueArchivePath(stamp, oldThreadId, 'processed'));
-      fs.unlinkSync(cfg.PROCESSED_FILE);
-    }
-  } catch (e) {
-    appendLog({ type: 'archive_warn', file: 'processed', error: e.message });
+  const { store } = require('./store');
+  const kept = {};
+  for (const account of require('./accounts').list()) {
+    kept[account.id] = store(account).monthlyArchive(oldThreadId, now);
   }
-
-  let keptCodes = [];
-  try {
-    const queue = getQueue();
-    if (queue.length) {
-      const catalog = getCodeCatalog();
-      const cutoff = monthStartMs(now);
-      const queuedMs = (c) => {
-        const m = catalog.codes[c] || {};
-        return Date.parse(m.queuedAt || m.lastSeenAt || m.updatedAt || '') || 0;
-      };
-      keptCodes = queue.filter(c => queuedMs(c) >= cutoff);
-      const archived = queue.filter(c => queuedMs(c) < cutoff);
-      if (archived.length) {
-        fs.writeFileSync(uniqueArchivePath(stamp, oldThreadId, 'queue'), archived.join('\n') + '\n');
-      }
-      writeQueue(keptCodes);
-    }
-  } catch (e) {
-    appendLog({ type: 'archive_warn', file: 'queue', error: e.message });
-  }
-
   saveTriedState({ thread_id: newThreadId, tried_codes: [], successful_codes: [], failed_codes: [] });
   saveThreadId(newThreadId, newMonth);
   writeFileAtomic(cfg.THREAD_DETECTED_FILE, now.toISOString());
-  invalidateArchiveCache();
-  appendLog({ type: 'monthly_reset', old_thread: oldThreadId, new_thread: newThreadId, month: newMonth, kept_queued: keptCodes.length });
+  appendLog({ type: 'monthly_reset', old_thread: oldThreadId, new_thread: newThreadId, month: newMonth, kept_queued: kept });
 }
 
 function ueMonthlyReset(oldThreadId, newThreadId, newMonth, now = new Date()) {
@@ -545,162 +261,27 @@ function sumSavings(successes) {
   return successes.reduce((acc, r) => acc + parseSavings(r.detail), 0);
 }
 
-// Savings bucketed by LOCAL calendar month from row timestamps — the cycle a
-// row was archived under doesn't matter. Rows without a timestamp are legacy
-// imports with no dollar detail, so skipping them loses nothing.
-function bucketRows(rows, buckets, ueBuckets) {
-  for (const r of rows) {
-    if (r.result !== 'success' || !r.ts) continue;
-    const month = monthKey(r.ts);
-    if (!month) continue;
-    const saved = parseSavings(r.detail);
-    buckets[month] = (buckets[month] || 0) + saved;
-    if (/·\s*UberEats\b/i.test(r.detail || '')) ueBuckets[month] = (ueBuckets[month] || 0) + saved;
+// Forget that a code was seen in this month's threads, so the next scan can
+// queue it again (used when a result is deleted or retried).
+function forgetSeen(code) {
+  const tried = getTriedState();
+  for (const k of ['tried_codes', 'successful_codes', 'failed_codes', 'skipped_applied']) {
+    tried[k] = (tried[k] || []).filter(c => c !== code);
   }
-}
-
-// Archives only change at a monthly reset, so their rows and buckets are
-// cached by the directory's file list.
-let _archiveCache = null;
-function invalidateArchiveCache() { _archiveCache = null; }
-
-function archiveData() {
-  let files = [];
-  try { files = fs.readdirSync(cfg.ARCHIVE_DIR).filter(f => f.endsWith('-processed.txt') || /-processed-\d+\.txt$/.test(f)).sort(); }
-  catch {}
-  const key = files.join('|');
-  if (_archiveCache && _archiveCache.key === key) return _archiveCache;
-  const buckets = {};
-  const ueBuckets = {};
-  const rows = files.flatMap(f => readProcessedFile(path.join(cfg.ARCHIVE_DIR, f)));
-  bucketRows(rows, buckets, ueBuckets);
-  _archiveCache = { key, buckets, ueBuckets, rows };
-  return _archiveCache;
-}
-
-function getSavingsSummary(now = new Date()) {
-  const archived = archiveData();
-  const buckets = { ...archived.buckets };
-  const ueBuckets = { ...archived.ueBuckets };
-  bucketRows(getProcessed(), buckets, ueBuckets);
-  const currentMonth = monthKey(now);
-  const lastMonth = previousMonthKey(currentMonth);
-  if (!(currentMonth in buckets)) buckets[currentMonth] = 0;
-  const months = Object.keys(buckets).sort();
-  return {
-    currentMonth,
-    savedThisMonth: buckets[currentMonth],
-    // null = no history before this month (nothing to compare against)
-    savedLastMonth: months[0] < currentMonth ? (buckets[lastMonth] || 0) : null,
-    savedLifetime: months.reduce((s, m) => s + buckets[m], 0),
-    savedOnUberEats: ueBuckets[currentMonth] || 0,
-    monthlySavings: months.map(month => ({ month, saved: buckets[month] })),
-  };
-}
-
-function getMonthlySavings(now = new Date()) {
-  return getSavingsSummary(now).monthlySavings;
-}
-
-// When the cycle last turned over — the newest archive filename's date.
-function getLastResetDate() {
-  try {
-    const dates = fs.readdirSync(cfg.ARCHIVE_DIR)
-      .map(f => (f.match(/^(\d{4}-\d{2}-\d{2})/) || [])[1])
-      .filter(Boolean)
-      .sort();
-    return dates.length ? dates[dates.length - 1] : null;
-  } catch {
-    return null;
+  saveTriedState(tried);
+  const ueTried = getUETriedState();
+  for (const k of ['tried_codes', 'skipped_applied']) {
+    ueTried[k] = (ueTried[k] || []).filter(c => c !== code);
   }
-}
-
-// ── Stats ────────────────────────────────────────────────────────────────────
-
-// This calendar month's results, one per code, whether still in processed.txt
-// or already archived by a monthly reset. A code that landed this month keeps
-// that row even if a later re-check only said "Already applied".
-function monthResults(now = new Date()) {
-  const month = monthKey(now);
-  const landed = (r) => r.result === 'region_skip' || (r.result === 'success' && !isAlreadyApplied(r));
-  const rows = [...archiveData().rows, ...getProcessed()]
-    .filter(r => r.ts && monthKey(r.ts) === month)
-    .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-  const byCode = new Map();
-  for (const r of rows) {
-    const prev = byCode.get(r.code);
-    if (prev && landed(prev) && !landed(r)) continue;
-    byCode.set(r.code, r);
-  }
-  return [...byCode.values()].map(r => ({
-    ...r,
-    platform: platformOf(r),
-    amount: isAlreadyApplied(r) ? null : amountOf(r.detail),
-    location: r.result === 'region_skip' ? locationOf(r.detail) : null,
-  }));
-}
-
-function getStats() {
-  const month = monthResults();
-  const queueCount = getQueue().length;
-  const catalog = getCodeCatalog();
-
-  const successes = month.filter(r => r.result === 'success');
-  // "Already applied" successes confirm that a code from an earlier cycle is
-  // still on the account — not fresh wins, so they don't count as "applied".
-  const freshSuccesses = successes.filter(r => !isAlreadyApplied(r));
-  const regionLocked = month.filter(r => r.result === 'region_skip');
-  const u = getUSCFState();
-  const recentCutoff = Date.now() - cfg.REAPPLY_SKIP_DAYS * 86400000;
-
-  return {
-    threadId: getThreadId(),
-    threadMonth: getThreadMonth(),
-    ueThreadId: getUEThreadId(),
-    ueThreadMonth: getUEThreadMonth(),
-    threadFreshness: getThreadFreshness(),
-    uscf: {
-      topicId: cfg.USCF_TOPIC_ID,
-      url: `${cfg.USCF_BASE_URL}/t/topic/${cfg.USCF_TOPIC_ID}`,
-      lastPostNumber: u.lastPostNumber || null,
-      lastScanAt: u.lastScanAt || null,
-    },
-    // Codes inside the re-apply skip window — shown on the Queue page so
-    // "why isn't X queued?" has a visible answer.
-    recentlyAppliedList: Object.entries(loadAppliedLedger())
-      .map(([code, ts]) => ({ code, appliedAt: ts, ms: new Date(ts).getTime() }))
-      .filter(e => !isNaN(e.ms) && e.ms >= recentCutoff)
-      .sort((a, b) => b.ms - a.ms)
-      .map(({ code, appliedAt }) => ({ code, appliedAt })),
-    reapplySkipDays: cfg.REAPPLY_SKIP_DAYS,
-    queueCount,
-    totalTried: month.length,
-    successCount: freshSuccesses.length,
-    alreadyOnAccountCount: successes.length - freshSuccesses.length,
-    rejectedCount: month.filter(r => r.result === 'rejected').length,
-    rateLimitedCount: month.filter(r => r.result === 'ratelimited').length,
-    regionLockedCount: regionLocked.length,
-    ...getSavingsSummary(),
-    lastResetDate: getLastResetDate(),
-    appVersion: require('../package.json').version,
-    heartbeat: getHeartbeat(),
-    successList: successes.map(r => ({ code: r.code, detail: r.detail, already: isAlreadyApplied(r), platform: r.platform, amount: r.amount })),
-    regionLockedList: regionLocked.map(r => ({ code: r.code, detail: r.detail, platform: r.platform, amount: r.amount, location: r.location })),
-    monitoredSources: Object.entries(catalog.sources)
-      .map(([key, value]) => ({ key, ...value }))
-      .sort((a, b) => (a.label || a.key).localeCompare(b.label || b.key)),
-  };
+  saveUETriedState(ueTried);
 }
 
 module.exports = {
-  ensureDirs,
+  ensureDirs, readText, readJson,
   normalizeCode,
   getCodeCatalog, saveCodeCatalog, mergeCodeMeta, setSourceStatus,
-  getQueue, addToQueue, removeFromQueue, rankQueue,
-  getQueueDetails,
-  getProcessed, markResult, reclassifyResult, requeueResult, deleteResult,
-  getProcessedDetails, amountOf, locationOf,
-  getTriedState, saveTriedState,
+  parseProcessedLine, readProcessedFile, amountOf, locationOf, platformOf, isAlreadyApplied,
+  getTriedState, saveTriedState, forgetSeen,
   getThreadId, getThreadMonth, saveThreadId,
   getThreadDetectedAt, getUEThreadDetectedAt,
   getThreadFreshness, computeThreadState,
@@ -709,11 +290,8 @@ module.exports = {
   getUETriedState, saveUETriedState,
   ueMonthlyReset,
   appendLog, getLog,
-  recordApplied, getRecentlyApplied, loadAppliedLedger,
   getUSCFState, saveUSCFState,
-  getMonthlySavings, getSavingsSummary,
   setHealthWarning, getHealthWarning, clearHealthWarning,
   getHeartbeat, recordHeartbeat,
   parseSavings, sumSavings,
-  getStats,
 };

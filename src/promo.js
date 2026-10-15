@@ -264,19 +264,20 @@ async function detectResult(page, beforeText) {
   return { result: 'unknown', detail: 'Could not determine result', codeSpecific: true };
 }
 
-// Open the modal, type the code, apply, read the verdict.
-async function attempt(page, plat, code) {
+// Open the modal, type the code, apply, read the verdict. `accountId` is the
+// account whose Chrome profile `page` belongs to (for its login status).
+async function attempt(page, plat, code, accountId) {
   const outcome = await openPromoModal(page, plat);
   if (outcome === 'off_domain') {
-    session.set(plat.key, false);
+    session.set(plat.key, false, accountId);
     return { result: 'not_logged_in', detail: `Redirected — use Settings → Log in to ${plat.name}` };
   }
   if (outcome === 'logged_out') {
-    session.set(plat.key, false);
+    session.set(plat.key, false, accountId);
     return { result: 'not_logged_in', detail: `${plat.name} session expired — Settings → Log in to ${plat.name}` };
   }
   if (outcome === 'blocked') return { result: 'error', detail: 'Promo modal did not open' };
-  session.set(plat.key, true); // the modal opened: the session works
+  session.set(plat.key, true, accountId); // the modal opened: the session works
 
   const entered = await enterCode(page, plat, code);
   if (entered.error) return { result: 'error', detail: entered.error };
@@ -294,13 +295,13 @@ async function attempt(page, plat, code) {
 // "Applied!" rather than guessed from unrelated page text. If the modal closes
 // silently again, it's counted as applied: rejections are spelled out in the
 // modal, and so far every silent close has turned out to be a success.
-async function applyCode(page, code, platform = 'postmates', { onConfirm } = {}) {
+async function applyCode(page, code, platform = 'postmates', { onConfirm, accountId = 'main' } = {}) {
   const plat = PLATFORMS[platform] || PLATFORMS.postmates;
-  const first = await attempt(page, plat, code);
+  const first = await attempt(page, plat, code, accountId);
   if (first.result !== 'closed') return first;
 
   onConfirm?.();
-  const second = await attempt(page, plat, code);
+  const second = await attempt(page, plat, code, accountId);
   let verdict;
   if ((second.result === 'success' && second.detail === 'Already applied')
       || (second.result === 'rejected' && second.detail === 'Already used')) {
@@ -312,7 +313,7 @@ async function applyCode(page, code, platform = 'postmates', { onConfirm } = {})
   } else {
     verdict = second; // the first attempt evidently didn't apply; this is the real verdict
   }
-  state.appendLog({ type: 'confirm_pass', code, platform: plat.key, result: verdict.result, detail: verdict.detail });
+  state.appendLog({ type: 'confirm_pass', code, platform: plat.key, account: accountId, result: verdict.result, detail: verdict.detail });
   return verdict;
 }
 

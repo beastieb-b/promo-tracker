@@ -99,6 +99,9 @@
         <button type="button" class="btn btn-secondary btn-sm" data-action="login" data-target="ubereats" data-variant="banner">🔐 Log in</button>
       </div>
 
+      <!-- Several accounts: one session banner per logged-out account (accounts.js) -->
+      <div id="account-login-banners" hidden></div>
+
       <!-- Setup checklist (auto-hides when all required steps are done) -->
       <div id="setup-checklist" hidden>
         <div class="setup-header">
@@ -111,7 +114,15 @@
       <!-- Overview -->
       <section id="section-overview" class="section active" aria-labelledby="h-overview">
         <div class="section-header">
-          <h1 id="h-overview" tabindex="-1">Dashboard</h1>
+          <div class="section-title">
+            <h1 id="h-overview" tabindex="-1">Dashboard</h1>
+            <div class="account-switch" data-account-switch hidden>
+              <label for="account-select-overview" class="visually-hidden">Show account</label>
+              <select id="account-select-overview" class="account-select" data-action="switch-account">
+                <option value="all">All accounts</option>
+              </select>
+            </div>
+          </div>
           <div class="thread-badge" id="thread-badge">No thread loaded</div>
         </div>
 
@@ -216,11 +227,25 @@
       <!-- Queue -->
       <section id="section-queue" class="section" aria-labelledby="h-queue">
         <div class="section-header">
-          <h1 id="h-queue" tabindex="-1">Code Queue</h1>
+          <div class="section-title">
+            <h1 id="h-queue" tabindex="-1">Code Queue</h1>
+            <div class="account-switch" data-account-switch hidden>
+              <label for="account-select-queue" class="visually-hidden">Show account</label>
+              <select id="account-select-queue" class="account-select" data-action="switch-account">
+                <option value="all">All accounts</option>
+              </select>
+            </div>
+          </div>
           <form class="add-code-form" data-action="add-code" autocomplete="off">
             <label for="add-code-input" class="visually-hidden">Promo code to add</label>
             <input type="text" id="add-code-input" placeholder="Add code manually…" class="code-input"
                    autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="40">
+            <span class="add-code-account-wrap" id="add-code-account-wrap" hidden>
+              <label for="add-code-account" class="visually-hidden">Queue the code for</label>
+              <select id="add-code-account" class="account-select add-code-account">
+                <option value="all">All accounts</option>
+              </select>
+            </span>
             <button type="submit" class="btn btn-primary">Add</button>
           </form>
         </div>
@@ -254,7 +279,15 @@
       <!-- Results -->
       <section id="section-results" class="section" aria-labelledby="h-results">
         <div class="section-header">
-          <h1 id="h-results" tabindex="-1">Results</h1>
+          <div class="section-title">
+            <h1 id="h-results" tabindex="-1">Results</h1>
+            <div class="account-switch" data-account-switch hidden>
+              <label for="account-select-results" class="visually-hidden">Show account</label>
+              <select id="account-select-results" class="account-select" data-action="switch-account">
+                <option value="all">All accounts</option>
+              </select>
+            </div>
+          </div>
           <div class="results-controls">
             <label for="results-search" class="visually-hidden">Search codes</label>
             <input type="search" id="results-search" class="code-input results-search" placeholder="Search code…"
@@ -309,8 +342,8 @@
           <h1 id="h-settings" tabindex="-1">Settings</h1>
         </div>
 
-        <!-- Postmates login -->
-        <div class="card settings-card">
+        <!-- Postmates login (single account; the Accounts card replaces both login cards) -->
+        <div class="card settings-card" id="postmates-login-card">
           <div class="card-header">
             <h3>Postmates Login</h3>
             <span class="card-badge" id="login-status-badge">Checking…</span>
@@ -325,7 +358,7 @@
         </div>
 
         <!-- Uber Eats login (separate session — codes Postmates rejects are retried here) -->
-        <div class="card settings-card">
+        <div class="card settings-card" id="ubereats-login-card">
           <div class="card-header">
             <h3>Uber Eats Login</h3>
             <span class="card-badge" id="ue-login-status-badge">Checking…</span>
@@ -337,6 +370,40 @@
             </div>
             <button type="button" class="btn btn-primary" data-action="login" data-target="ubereats">🔐 Log in to Uber Eats</button>
           </div>
+        </div>
+
+        <!-- Multiple accounts (setting) -->
+        <div class="card settings-card" id="multi-account-card">
+          <div class="card-header">
+            <h3>Multiple accounts</h3>
+            <span class="card-badge" id="multi-account-badge"></span>
+          </div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <label class="settings-label" for="multi-account-toggle">Support multiple Postmates / Uber Eats accounts</label>
+              <div class="settings-desc" id="multi-account-desc">Each account gets its own Chrome profile; apply runs go through the accounts one after another. Uber allows one account per person — use this for household members' own accounts. Many accounts redeeming the same codes from one computer can get flagged.</div>
+            </div>
+            <div class="settings-control">
+              <input type="checkbox" role="switch" class="switch" id="multi-account-toggle" data-action="toggle-multi"
+                     aria-describedby="multi-account-desc" disabled>
+            </div>
+          </div>
+        </div>
+
+        <!-- Accounts (only with multiple accounts on): logins, names, add/remove -->
+        <div class="card settings-card" id="accounts-card" hidden>
+          <div class="card-header">
+            <h3>Accounts</h3>
+            <span class="card-badge badge-muted" id="accounts-count"></span>
+          </div>
+          <div class="accounts-list" id="accounts-list"></div>
+          <form class="settings-footer add-account-form" data-action="add-account" autocomplete="off">
+            <label for="add-account-input" class="visually-hidden">New account name</label>
+            <input type="text" id="add-account-input" class="code-input text-input" maxlength="30"
+                   placeholder="Name, e.g. Partner" spellcheck="false">
+            <button type="submit" class="btn btn-primary btn-sm">Add account</button>
+            <span class="add-account-note">Names are 1–30 characters. A new account gets the codes seen in the last <span data-meta="reapplySkipDays">few</span> days.</span>
+          </form>
         </div>
 
         <!-- Setup steps (same list as the overview) -->

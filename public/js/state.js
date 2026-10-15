@@ -8,20 +8,24 @@ export const state = {
   scanStatusAt: 0,     // when an SSE event last set scanStatus
   settings: {},        // stats.settings / POST /api/settings response
   processed: [],       // /api/processed (oldest first)
+  processedScope: null, // account scope `processed` was read with (see scope.js)
   queue: [],           // /api/queue (server order)
+  queueScope: null,
   queueLoaded: false,
   logs: [],            // /api/log (newest first)
   logLoaded: false,
   access: null,        // /api/access (viewer on the Mac only)
   accessError: null,
 
+  accountChoice: 'all', // account switcher: 'all' or an account id (multiple accounts on)
+
   filter: 'all',       // Results filter
   search: '',          // Results search (upper-cased)
 
-  hidden: { processed: new Set(), queue: new Set() },   // rows waiting out their Undo window
+  hidden: { processed: new Set(), queue: new Set() },   // rowKey()s waiting out their Undo window
   starting: { reddit: false, apply: false },            // run request in flight
   runsDone: { reddit: 0, apply: 0 },                    // *_done events seen (orders click vs. finish)
-  login: { postmates: false, ubereats: false },         // login window being opened
+  login: {},           // loginKey(account, target) -> 'opening' | 'open' (login window)
   selfTest: { running: false, result: null },
   openSteps: new Set(),                                 // expanded setup steps
   lastRun: { reddit: null, apply: null },

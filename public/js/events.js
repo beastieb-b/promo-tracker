@@ -6,10 +6,12 @@ import { api, reportError, connectEvents } from './api.js';
 import { onAction } from './actions.js';
 import { showToast } from './toast.js';
 import { isVisible } from './router.js';
-import { loadMeta, loadStats, loadProcessed, loadQueue, loadLog, refreshAll, quiet } from './data.js';
+import { loadMeta, loadStats, loadProcessed, loadQueue, loadLog, refreshAll, refreshScoped, quiet } from './data.js';
 import * as live from './live.js';
 import { scanFinished, setLastRun } from './overview.js';
 import { dailyCheckPhrase } from './settings.js';
+import { onAccountsUpdated, setLoginStatus, accountPrefix } from './accounts.js';
+import { isMulti, loginKey } from './scope.js';
 import { $, plural, platformName } from './util.js';
 
 let stream = null;
@@ -142,62 +144,81 @@ function handleEvent(d) {
       break;
     }
 
+    // setup_done / login_timeout / session_verified carry `account` and
+    // `accountName`; with several accounts on, buttons and toasts are per account.
     case 'setup_done': {
       const target = d.target === 'ubereats' ? 'ubereats' : 'postmates';
       const name = platformName(target);
       const ok = target === 'ubereats' ? d.ueLoggedIn : d.loggedIn;
-      state.login[target] = false;
+      const who = accountPrefix(d);
+      delete state.login[loginKey(isMulti() ? d.account : null, target)];
+      loginWindowClosed();
       // Cookie presence only proves the login saved; the server is verifying
       // the session now (session_verified follows), so show "unverified".
       if (state.stats) {
-        if (target === 'ubereats') state.stats.ueLoggedIn = ok ? null : false;
-        else state.stats.loggedIn = ok ? null : false;
+        setLoginStatus(d.account, target, ok ? null : false);
         publish('stats');
       }
       publish('login');
-      showToast(ok ? `${name} login saved — verifying session…` : `Chrome closed — ${name} session not detected`, ok ? 'success' : 'error');
+      showToast(ok ? `${who}${name} login saved — verifying session…` : `${who}Chrome closed — ${name} session not detected`, ok ? 'success' : 'error');
       break;
     }
 
     case 'login_timeout': {
       const target = d.target === 'ubereats' ? 'ubereats' : 'postmates';
-      state.login[target] = false;
+      delete state.login[loginKey(isMulti() ? d.account : null, target)];
+      loginWindowClosed();
       publish('login');
-      showToast('Login window closed after 15 minutes');
+      const who = accountPrefix(d);
+      showToast(who ? `${who}${platformName(target)} login window closed after 15 minutes` : 'Login window closed after 15 minutes');
       quiet(loadStats);
       break;
     }
 
     case 'session_verified': {
-      const name = platformName(d.platform === 'ubereats' ? 'ubereats' : 'postmates');
+      const target = d.platform === 'ubereats' ? 'ubereats' : 'postmates';
+      const name = platformName(target);
+      const who = accountPrefix(d);
       if (d.ok === true || d.ok === false) {
         if (state.stats) {
-          if (d.platform === 'ubereats') state.stats.ueLoggedIn = d.ok;
-          else state.stats.loggedIn = d.ok;
+          setLoginStatus(d.account, target, d.ok);
           publish('stats');
         }
-        showToast(d.ok ? `${name} session verified ✅` : `${name} session expired — log in again`, d.ok ? 'success' : 'error');
+        showToast(d.ok ? `${who}${name} session verified ✅` : `${who}${name} session expired — log in again`, d.ok ? 'success' : 'error');
       } else {
-        showToast(`${name} session check inconclusive${d.error ? ` (${d.error})` : ''} — it will be retried by ${dailyCheckPhrase()} or the next apply run`, 'error');
+        showToast(`${who}${name} session check inconclusive${d.error ? ` (${d.error})` : ''} — it will be retried by ${dailyCheckPhrase()} or the next apply run`, 'error');
       }
       break;
     }
 
     case 'settings_updated':
       if (d.settings && typeof d.settings === 'object') {
+        const wasMulti = isMulti();
         state.settings = d.settings;
-        if (state.stats) state.stats.settings = d.settings;
+        if (state.stats) {
+          state.stats.settings = d.settings;
+          if (typeof d.settings.multiAccount === 'boolean') state.stats.multiAccount = d.settings.multiAccount;
+        }
         publish('settings');
+        // Multiple accounts toggled (here or on another device): everything
+        // shown is per account, so re-read it all.
+        if (isMulti() !== wasMulti) {
+          publish('stats');
+          refreshScoped();
+        }
       }
       applyScanStatus(d.scanStatus);
+      break;
+
+    case 'accounts_updated':
+      onAccountsUpdated(d.accounts);
       break;
 
     case 'error':
       showToast(`Error: ${d.message || 'something went wrong'}`, 'error');
       // The event doesn't say which action failed: release every login button
       // and re-read the run state rather than guessing.
-      state.login.postmates = false;
-      state.login.ubereats = false;
+      state.login = {};
       publish('login');
       quiet(loadStats);
       break;
@@ -205,6 +226,16 @@ function handleEvent(d) {
     default:
       break;
   }
+}
+
+// A poll taken while the login window was open says the browser is busy with
+// it; the window has closed now, so don't keep every login button disabled
+// until the next poll.
+function loginWindowClosed() {
+  if (state.scanStatus?.browserBusy !== 'login') return;
+  state.scanStatus = { ...state.scanStatus, browserBusy: null };
+  state.scanStatusAt = Date.now();
+  publish('scanStatus');
 }
 
 function applyFinished(d) {

@@ -8,10 +8,12 @@ import { showToast } from './toast.js';
 import { go, isVisible } from './router.js';
 import { loadStats, quiet } from './data.js';
 import * as live from './live.js';
+import { renderLoginButtons } from './accounts.js';
+import { isMulti, accountList, accountTag, statsView, viewOf, rowKey, rowFocus } from './scope.js';
 import {
   $, escapeHtml as esc, cssToken, safeUrl, externalLink, timeAgo, formatDuration, untilText,
   formatInterval, formatMoney, formatMonth, formatDateTime, plural, setText, show, patchHTML,
-  resultIcon, resultLabel,
+  resultIcon, resultLabel, platformName,
 } from './util.js';
 
 export function initOverview() {
@@ -218,8 +220,35 @@ function renderBanners(st) {
   } else {
     show('health-banner', false);
   }
-  show('login-banner', st.loggedIn === false);
-  show('ue-login-banner', st.ueLoggedIn === false);
+  // Several accounts: one banner per account that's logged out (below).
+  const multi = isMulti();
+  show('login-banner', !multi && st.loggedIn === false);
+  show('ue-login-banner', !multi && st.ueLoggedIn === false);
+  renderAccountBanners(multi);
+}
+
+function renderAccountBanners(multi) {
+  const el = $('account-login-banners');
+  if (!el) return;
+  const html = (multi ? accountList() : []).map(a => {
+    const out = [a.loggedIn === false ? 'postmates' : null, a.ueLoggedIn === false ? 'ubereats' : null].filter(Boolean);
+    if (!out.length) return '';
+    const id = esc(a.id);
+    const what = out.length === 2
+      ? 'Postmates and Uber Eats sessions expired'
+      : `${platformName(out[0])} session expired`;
+    const buttons = out.map(target => `<button type="button" class="btn btn-secondary btn-sm" data-action="login" data-target="${target}" data-account="${id}" data-variant="${out.length === 2 ? 'banner-platform' : 'banner'}" data-focus-key="lb-${id}-${target}">🔐 Log in</button>`).join('');
+    return `<div class="health-banner login-warning">
+      <span class="health-banner-icon" aria-hidden="true">🔑</span>
+      <div class="health-banner-text">
+        <strong>${esc(a.name || a.id)}: ${esc(what)}</strong>
+        <span>Codes can't be applied for this account until you sign in. One click opens Chrome on the Mac running Promo Tracker.</span>
+      </div>
+      <div class="banner-actions">${buttons}</div>
+    </div>`;
+  }).join('');
+  if (patchHTML(el, html)) renderLoginButtons();
+  el.hidden = !html;
 }
 
 async function dismissHealthWarning() {
@@ -397,10 +426,11 @@ const platformTag = p => (p === 'ubereats' ? '<span class="platform-tag">Uber Ea
 
 function renderSuccessList(items) {
   const list = Array.isArray(items) ? items : [];
+  const view = statsView();
   setText('success-count', list.length);
   patchHTML($('success-list'), list.length
-    ? list.map(item => `<button type="button" class="success-chip" data-action="copy-code" data-code="${esc(item.code)}" data-focus-key="sc-${esc(item.code)}" title="Click to copy ${esc(item.code)}">
-        <span class="success-chip-code">${esc(item.code)}</span>${item.amount ? `<span class="success-chip-value">${esc(item.amount)}</span>` : ''}${platformTag(item.platform)}${item.already ? '<span class="platform-tag">already on account</span>' : ''}
+    ? list.map(item => `<button type="button" class="success-chip" data-action="copy-code" data-code="${esc(item.code)}" data-focus-key="sc-${esc(rowFocus(item))}" title="Click to copy ${esc(item.code)}">
+        <span class="success-chip-code">${esc(item.code)}</span>${item.amount ? `<span class="success-chip-value">${esc(item.amount)}</span>` : ''}${platformTag(item.platform)}${item.already ? '<span class="platform-tag">already on account</span>' : ''}${accountTag(item, view)}
       </button>`).join('')
     : '<div class="empty-state">No successful codes yet this month</div>');
 }
@@ -411,8 +441,9 @@ function renderRegionLocked(items) {
   show('region-locked-card', list.length > 0);
   if (!list.length) return;
   setText('region-locked-count', list.length);
-  patchHTML($('region-list'), list.map(item => `<button type="button" class="region-chip" data-action="copy-code" data-code="${esc(item.code)}" data-focus-key="rc-${esc(item.code)}" title="Click to copy ${esc(item.code)}">
-      <span class="region-chip-code">${esc(item.code)}</span>${item.amount ? `<span class="region-chip-amt">${esc(item.amount)}</span>` : ''}${item.location ? `<span class="region-chip-loc">📍 ${esc(item.location)}</span>` : ''}${platformTag(item.platform)}
+  const view = statsView();
+  patchHTML($('region-list'), list.map(item => `<button type="button" class="region-chip" data-action="copy-code" data-code="${esc(item.code)}" data-focus-key="rc-${esc(rowFocus(item))}" title="Click to copy ${esc(item.code)}">
+      <span class="region-chip-code">${esc(item.code)}</span>${item.amount ? `<span class="region-chip-amt">${esc(item.amount)}</span>` : ''}${item.location ? `<span class="region-chip-loc">📍 ${esc(item.location)}</span>` : ''}${platformTag(item.platform)}${accountTag(item, view)}
     </button>`).join(''));
 }
 
@@ -421,11 +452,12 @@ function renderRegionLocked(items) {
 function renderActivity() {
   const feed = $('activity-feed');
   if (!feed) return;
-  const recent = state.processed.filter(r => !state.hidden.processed.has(r.code)).slice(-8).reverse();
+  const recent = state.processed.filter(r => r && !state.hidden.processed.has(rowKey(r))).slice(-8).reverse();
+  const view = viewOf(state.processedScope);
   patchHTML(feed, recent.length
     ? recent.map(r => `<div class="activity-item">
         <span class="activity-dot dot-${cssToken(r.result)}" aria-hidden="true"></span>
-        <span class="activity-text">${resultIcon(r.result)} <strong>${esc(r.code)}</strong> — ${esc(resultLabel(r.result))}${r.detail ? `<span class="activity-detail"> · ${esc(r.detail)}</span>` : ''}${r.sourceLabel ? ` <span class="inline-meta-pill">${esc(r.sourceLabel)}</span>` : ''}</span>
+        <span class="activity-text">${resultIcon(r.result)} <strong>${esc(r.code)}</strong>${accountTag(r, view)} — ${esc(resultLabel(r.result))}${r.detail ? `<span class="activity-detail"> · ${esc(r.detail)}</span>` : ''}${r.sourceLabel ? ` <span class="inline-meta-pill">${esc(r.sourceLabel)}</span>` : ''}</span>
         ${r.ts ? `<span class="activity-time">${esc(timeAgo(r.ts))}</span>` : ''}
       </div>`).join('')
     : '<div class="empty-state">No activity yet</div>');

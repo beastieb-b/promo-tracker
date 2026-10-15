@@ -9,13 +9,18 @@ const { requeuePendingUberEats } = require('./login');
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ── Apply run ────────────────────────────────────────────────────────────────
-// Tries up to maxCodes queued codes (best first, see state.rankQueue) on
-// Postmates, spaced CODE_WAIT_MS apart. A code Postmates rejects for any
-// reason except "Code expired" is retried on Uber Eats. Rate limits and a
-// logged-out Postmates stop the run; transient errors leave the code queued.
+// For each account in turn (one Chrome profile at a time): try up to maxCodes
+// of its queued codes (best first, see store.rankQueue) on Postmates, spaced
+// CODE_WAIT_MS apart — the spacing also holds between accounts, so the site
+// never sees requests faster than with one account. A code Postmates rejects
+// for any reason except "Code expired" is retried on Uber Eats. A rate limit
+// stops the whole run; a logged-out account stops that account's turn;
+// transient errors leave the code queued.
 //
-// `deps` swaps out the browser for tests.
-async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, deps = {} } = {}) {
+// `stores` defaults to the active accounts; `deps` swaps out the browser for tests.
+async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, stores, deps = {} } = {}) {
+  stores = stores || require('./store').active();
+  const tagged = require('./accounts').enabled() || stores.length > 1 || stores.some(s => s.account.id !== 'main');
   const d = {
     acquire: browser.acquire,
     getPage: browser.getPage,
@@ -28,56 +33,66 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, dep
     attemptMs: cfg.CODE_ATTEMPT_MS,
     waitMs: cfg.CODE_WAIT_MS,
     cooldownMs: cfg.TRANSIENT_COOLDOWN_MS,
-    budgetMs: cfg.APPLY_BUDGET_MS,
+    budgetMs: cfg.APPLY_BUDGET_MS * stores.length,
     worstCaseMs: cfg.WORST_CASE_CODE_MS,
     maxTransientFailures: cfg.MAX_TRANSIENT_FAILURES,
     ...deps,
   };
-  const progress = (u) => { try { onProgress?.(u); } catch {} };
 
   const release = d.acquire('apply');
   if (!release) return { error: `Browser is busy (${browser.holder() || 'in use'})`, busy: true };
   const startedAt = d.now();
-  state.appendLog({ type: 'apply_run_start' });
+  state.appendLog({ type: 'apply_run_start', ...(tagged ? { accounts: stores.map(s => s.account.id) } : {}) });
 
   let page = null;
-  // Run one attempt under its own deadline. A deadline means the page may be
-  // frozen, so a fresh one replaces it for the rest of the run.
-  const attempt = async (platform, code, label) => {
-    // A confirmation pass means the code may already have landed: remember
-    // that, so a later "Already applied" is recognized as this cycle's win
-    // even if the confirmation itself doesn't finish.
-    const onConfirm = () => {
-      state.mergeCodeMeta(code, { confirmPending: true });
-      progress({ code, status: 'confirming', platform });
-    };
-    try {
-      const v = await d.withDeadline(d.applyCode(page, code, platform, { onConfirm }), d.attemptMs, label);
-      if (v && v.result === 'success' && v.detail === 'Already applied'
-          && (state.getCodeCatalog().codes[code] || {}).confirmPending) {
-        return { ...v, detail: 'Applied!' };
+  const results = [];
+  let rateLimited = false;
+  let stoppedForTime = false;
+  let waitBeforeNext = false; // a code was attempted since the last gap
+
+  // One account's turn.
+  async function runAccount(s) {
+    const acct = s.account;
+    const who = tagged ? { account: { id: acct.id, name: acct.name } } : {};
+    const progress = (u) => { try { onProgress?.({ ...u, ...who }); } catch {} };
+    const log = (e) => state.appendLog({ ...e, ...(tagged ? { account: acct.id } : {}) });
+    const record = (r) => results.push({ ...r, ...(tagged ? { account: acct.id } : {}) });
+    const replaceLast = (r) => { results[results.length - 1] = { ...r, ...(tagged ? { account: acct.id } : {}) }; };
+
+    // One attempt under its own deadline. A deadline means the page may be
+    // frozen, so a fresh one replaces it for the rest of the run.
+    const attempt = async (platform, code, label) => {
+      // A confirmation pass means the code may already have landed: remember
+      // that, so a later "Already applied" is recognized as this cycle's win
+      // even if the confirmation itself doesn't finish.
+      const onConfirm = () => {
+        s.setFlags(code, { confirmPending: true });
+        progress({ code, status: 'confirming', platform });
+      };
+      try {
+        const v = await d.withDeadline(d.applyCode(page, code, platform, { onConfirm, accountId: acct.id }), d.attemptMs, label);
+        if (v && v.result === 'success' && v.detail === 'Already applied' && s.getFlags(code).confirmPending) {
+          return { ...v, detail: 'Applied!' };
+        }
+        return v;
+      } catch (err) {
+        if (platform === 'ubereats') await d.screenshot(page, 'ue-error');
+        if (/deadline/.test(err.message)) { await d.closePage(page); page = await d.getPage(acct.paths.profile); }
+        return { result: 'error', detail: err.message.slice(0, 100) };
       }
-      return v;
-    } catch (err) {
-      if (platform === 'ubereats') await d.screenshot(page, 'ue-error');
-      if (/deadline/.test(err.message)) { await d.closePage(page); page = await d.getPage(); }
-      return { result: 'error', detail: err.message.slice(0, 100) };
-    }
-  };
+    };
 
-  try {
-    const processed = new Set(state.getProcessed().map(r => r.code));
-    const pending = state.getQueueDetails().filter(e => !processed.has(e.code)).slice(0, maxCodes).map(e => e.code);
-    if (!pending.length) {
-      state.appendLog({ type: 'apply_run_done', reason: 'no_pending_codes' });
-      return { applied: 0, results: [], reason: 'No codes in queue' };
-    }
+    const processed = new Set(s.getProcessed().map(r => r.code));
+    const pending = s.getQueueDetails().filter(e => !processed.has(e.code)).slice(0, maxCodes).map(e => e.code);
+    if (!pending.length) return;
 
-    page = await d.getPage();
-    const results = [];
-    let rateLimited = false;
-    let stoppedForTime = false;
-    let ueGaveUp = false; // Uber Eats failed this run even after pressing Log in
+    if (waitBeforeNext) {
+      progress({ code: pending[0], status: 'waiting', waitMs: d.waitMs });
+      await d.sleep(d.waitMs);
+    }
+    if (page) { await d.closePage(page); page = null; }
+    page = await d.getPage(acct.paths.profile);
+    let ueGaveUp = false; // Uber Eats failed this turn even after pressing Log in
 
     for (let i = 0; i < pending.length; i++) {
       const code = pending[i];
@@ -87,71 +102,73 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, dep
       // the outer deadline would cut it off mid-attempt. It stays queued.
       if (d.now() - startedAt + d.worstCaseMs > d.budgetMs) {
         stoppedForTime = true;
-        state.appendLog({ type: 'apply_stopped_for_time', code, codes_preserved: pending.length - i });
-        break;
+        log({ type: 'apply_stopped_for_time', code, codes_preserved: pending.length - i });
+        return;
       }
 
       progress({ code, status: 'trying' });
+      waitBeforeNext = true;
 
-      // Codes parked while Uber Eats was logged out come back flagged ueOnly:
+      // Codes held while Uber Eats was logged out come back flagged ueOnly:
       // Postmates already rejected them, so go straight to the Uber Eats retry.
-      const meta = state.getCodeCatalog().codes[code] || {};
-      const parked = !!meta.ueOnly;
+      const flags = s.getFlags(code);
+      const parked = !!flags.ueOnly;
       let applyResult = parked
-        ? { result: 'rejected', detail: meta.pmDetail || 'Not valid on Postmates' }
+        ? { result: 'rejected', detail: flags.pmDetail || 'Not valid on Postmates' }
         : await attempt('postmates', code, 'Code attempt');
 
-      results.push({ code, ...applyResult });
-      if (!parked) state.appendLog({ type: 'code_result', code, result: applyResult.result, detail: applyResult.detail });
+      record({ code, ...applyResult });
+      if (!parked) log({ type: 'code_result', code, result: applyResult.result, detail: applyResult.detail });
       progress({ code, status: applyResult.result, detail: applyResult.detail });
 
       if (applyResult.result === 'ratelimited') {
         // This code and the rest stay queued (markResult is never called).
         rateLimited = true;
-        state.appendLog({ type: 'rate_limited', code, codes_preserved: pending.length - i });
+        log({ type: 'rate_limited', code, codes_preserved: pending.length - i });
         progress({ code, status: 'rate_limited_stop', preserved: pending.length - i });
-        break;
+        return;
       }
 
       if (applyResult.result === 'not_logged_in') {
-        // Every remaining code would hit the same wall. Codes stay queued and
-        // resume once the login is back (the dashboard shows a banner).
-        state.appendLog({ type: 'code_deferred', code, reason: 'not_logged_in', note: 'session invalid — stopping run' });
+        // Every remaining code for this account would hit the same wall. They
+        // stay queued and resume once the login is back (the dashboard shows
+        // a banner); other accounts still get their turn.
+        log({ type: 'code_deferred', code, reason: 'not_logged_in', note: 'session invalid — skipping the rest of this account' });
         progress({ code, status: 'login_required', detail: applyResult.detail });
-        break;
+        return;
       }
 
       if (applyResult.result === 'error' || applyResult.result === 'unknown') {
         // Only failures the site gave for this code count toward giving up;
         // our own trouble (box didn't open, deadline) never settles a code.
-        const failures = (meta.transientFailures || 0) + (applyResult.codeSpecific ? 1 : 0);
+        const failures = (flags.transientFailures || 0) + (applyResult.codeSpecific ? 1 : 0);
         if (failures < d.maxTransientFailures) {
           // Transient or ambiguous — stays queued for the next run, after a
           // short cooldown so failures don't hammer the site back to back.
-          if (applyResult.codeSpecific) state.mergeCodeMeta(code, { transientFailures: failures });
-          state.appendLog({ type: 'code_deferred', code, reason: applyResult.result, note: `will retry next run (${failures}/${d.maxTransientFailures})` });
+          if (applyResult.codeSpecific) s.setFlags(code, { transientFailures: failures });
+          log({ type: 'code_deferred', code, reason: applyResult.result, note: `will retry next run (${failures}/${d.maxTransientFailures})` });
           if (!isLast) await d.sleep(d.cooldownMs);
           continue;
         }
         // Same failure run after run: not transient. Settle it as a Postmates
         // rejection, which also gives it its Uber Eats try.
-        state.appendLog({ type: 'code_gave_up', code, failures, detail: applyResult.detail });
+        log({ type: 'code_gave_up', code, failures, detail: applyResult.detail });
         applyResult = { result: 'rejected', detail: `Failed ${failures} runs: ${applyResult.detail.replace(/^Site error \((.*)\)$/, 'site error')}` };
-        results[results.length - 1] = { code, ...applyResult };
+        replaceLast({ code, ...applyResult });
       }
 
       const ueEligible = applyResult.result === 'rejected' && applyResult.detail !== 'Code expired';
       if (ueEligible && ueGaveUp) {
-        // Uber Eats already failed this run even after pressing Log in: park
+        // Uber Eats already failed this turn even after pressing Log in: hold
         // the code; it's requeued for Uber Eats once the login is back.
-        state.mergeCodeMeta(code, { pendingUberEats: true, ueOnly: false, pmDetail: applyResult.detail });
-        state.appendLog({ type: 'ubereats_parked', code, note: 'Uber Eats logged out — will retry there after login' });
+        s.setFlags(code, { pendingUberEats: true, ueOnly: false, pmDetail: applyResult.detail });
+        log({ type: 'ubereats_parked', code, note: 'Uber Eats logged out — will retry there after login' });
         applyResult = { result: applyResult.result, detail: `${applyResult.detail} · UberEats: retry after login` };
-        results[results.length - 1] = { code, ...applyResult };
+        replaceLast({ code, ...applyResult });
       } else if (ueEligible) {
         progress({ code, status: 'trying_ubereats' });
-        if (parked) state.mergeCodeMeta(code, { ueOnly: false });
-        state.appendLog({ type: 'ubereats_fallback', code, postmates_detail: applyResult.detail });
+        if (parked) s.setFlags(code, { ueOnly: false });
+        log({ type: 'ubereats_fallback', code, postmates_detail: applyResult.detail });
         // Two tries: the Uber Eats modal occasionally closes mid-flow, and an
         // error here would forfeit the code's Uber Eats chance for good.
         let ue;
@@ -159,23 +176,23 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, dep
           ue = await attempt('ubereats', code, 'Uber Eats attempt');
           if (ue.result !== 'error') break;
           if (ueAttempt === 0) {
-            state.appendLog({ type: 'ubereats_fallback_retry', code, error: ue.detail });
+            log({ type: 'ubereats_fallback_retry', code, error: ue.detail });
             await d.sleep(5000);
           }
         }
-        state.appendLog({ type: 'code_result', code, result: ue.result, detail: ue.detail, platform: 'ubereats' });
-        if (['success', 'rejected', 'region_skip'].includes(ue.result)) requeuePendingUberEats(); // the login works — release parked codes
+        log({ type: 'code_result', code, result: ue.result, detail: ue.detail, platform: 'ubereats' });
+        if (['success', 'rejected', 'region_skip'].includes(ue.result)) requeuePendingUberEats(s); // the login works — release held codes
         progress({ code, status: ue.result, detail: ue.detail, platform: 'ubereats' });
 
         if (ue.result === 'ratelimited') {
           rateLimited = true;
-          state.appendLog({ type: 'rate_limited', code, codes_preserved: pending.length - i, platform: 'ubereats' });
+          log({ type: 'rate_limited', code, codes_preserved: pending.length - i, platform: 'ubereats' });
           progress({ code, status: 'rate_limited_stop', preserved: pending.length - i });
-          break;
+          return;
         }
         if (ue.result === 'success' || ue.result === 'region_skip') {
           applyResult = { result: ue.result, detail: `${ue.detail} · UberEats` };
-          state.mergeCodeMeta(code, { appliedOn: 'ubereats' });
+          s.setFlags(code, { appliedOn: 'ubereats' });
         } else {
           // Keep the Postmates rejection, noting the Uber Eats outcome so the
           // Results row tells the whole story.
@@ -186,21 +203,43 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, dep
                 ? 'UberEats: retry after login'
                 : 'UberEats attempt errored';
           if (ue.result === 'not_logged_in') {
-            state.mergeCodeMeta(code, { pendingUberEats: true, pmDetail: applyResult.detail });
+            s.setFlags(code, { pendingUberEats: true, pmDetail: applyResult.detail });
             ueGaveUp = true;
           }
           applyResult = { result: applyResult.result, detail: `${applyResult.detail} · ${ueNote}` };
         }
-        results[results.length - 1] = { code, ...applyResult };
+        replaceLast({ code, ...applyResult });
       }
 
       // Final verdict (success / rejected / region_skip): record and dequeue.
-      state.markResult(code, applyResult.result, applyResult.detail);
+      s.markResult(code, applyResult.result, applyResult.detail);
+      // An expired code is expired for everyone: settle it for the other
+      // accounts too instead of spending their attempts on it.
+      if (tagged && applyResult.result === 'rejected' && /^Code expired\b/.test(applyResult.detail || '')) {
+        for (const other of stores) {
+          if (other !== s && other.getQueue().includes(code)) {
+            other.markResult(code, 'rejected', `Code expired (seen on ${acct.name})`);
+            log({ type: 'expired_shared', code, to: other.account.id });
+          }
+        }
+      }
 
       if (!isLast) {
         progress({ code, status: 'waiting', waitMs: d.waitMs });
         await d.sleep(d.waitMs);
+        waitBeforeNext = false;
       }
+    }
+  }
+
+  try {
+    for (const s of stores) {
+      if (rateLimited || stoppedForTime) break;
+      await runAccount(s);
+    }
+    if (!results.length) {
+      state.appendLog({ type: 'apply_run_done', reason: 'no_pending_codes' });
+      return { applied: 0, results: [], reason: 'No codes in queue' };
     }
 
     const successes = results.filter(r => r.result === 'success').length;
@@ -235,8 +274,9 @@ async function testDetection() {
   const fakeCode = 'SELFTEST' + Math.floor(1000 + Math.random() * 9000);
   let page = null;
   try {
-    page = await browser.getPage();
-    const verdict = await browser.withDeadline(promo.applyCode(page, fakeCode), cfg.CODE_ATTEMPT_MS, 'Self-test');
+    // The pipeline check runs on the first account's profile.
+    page = await browser.getPage(cfg.BROWSER_PROFILE_DIR);
+    const verdict = await browser.withDeadline(promo.applyCode(page, fakeCode, 'postmates', { accountId: 'main' }), cfg.CODE_ATTEMPT_MS, 'Self-test');
 
     const ok = verdict.result === 'rejected';
     state.appendLog({ type: 'self_test', code: fakeCode, result: verdict.result, ok });
