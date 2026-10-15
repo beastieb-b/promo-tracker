@@ -2008,3 +2008,31 @@ a.meta-pill.source:hover { background: rgba(10, 132, 255, 0.28); }
   /* The switch stays switch-sized; an invisible ring makes the tap target ≥44px. */
   .switch::after { content: ''; position: absolute; inset: -9px; }
 }
+
+/* ── Running version (sidebar + About) ─────────────────────────────────── */
+.logo-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.logo-version {
+  font-size: 11px;
+  color: var(--label-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.update-chip {
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.update-chip:hover { filter: brightness(1.1); }
+.update-chip[hidden] { display: none; }
+.about-update .settings-label { color: var(--warning); }
+@media (pointer: coarse) { .update-chip { min-height: 44px; } }

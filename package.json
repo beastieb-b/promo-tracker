@@ -1,6 +1,6 @@
 {
   "name": "postmates-promo-tracker",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Finds Postmates / Uber Eats promo codes on Reddit and USCardForum and applies them to your account automatically (macOS, Chrome).",
   "private": true,
   "license": "MIT",
@@ -16,7 +16,8 @@
     "lint": "eslint .",
     "install-service": "node src/install-service.js",
     "uninstall-service": "node src/install-service.js --uninstall",
-    "restart": "launchctl unload ~/Library/LaunchAgents/com.postmates.promo.plist 2>/dev/null; sleep 1; launchctl load ~/Library/LaunchAgents/com.postmates.promo.plist && echo 'Service restarted'"
+    "restart": "launchctl unload ~/Library/LaunchAgents/com.postmates.promo.plist 2>/dev/null; sleep 1; launchctl load ~/Library/LaunchAgents/com.postmates.promo.plist && echo 'Service restarted'",
+    "version:show": "node src/index.js --version"
   },
   "dependencies": {
     "cheerio": "^1.2.0",

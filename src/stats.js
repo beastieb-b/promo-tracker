@@ -46,7 +46,7 @@ function getStats(stores, now = new Date()) {
     regionLockedCount: regionLocked.length,
     ...summarizeSavings(stores.map(s => s.savingsBuckets()), now),
     lastResetDate: resets.length ? resets[resets.length - 1] : null,
-    appVersion: require('../package.json').version,
+    appVersion: require('./version').info().version,
     heartbeat: state.getHeartbeat(),
     successList: successes.map(r => ({ code: r.code, detail: r.detail, already: state.isAlreadyApplied(r), platform: r.platform, amount: r.amount, ...tag(r) })),
     regionLockedList: regionLocked.map(r => ({ code: r.code, detail: r.detail, platform: r.platform, amount: r.amount, location: r.location, ...tag(r) })),

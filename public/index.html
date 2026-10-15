@@ -14,8 +14,12 @@
     <aside class="sidebar" id="sidebar">
       <div class="logo">
         <span class="logo-icon" aria-hidden="true">🍔</span>
-        <span class="logo-text">Promo Tracker</span>
+        <span class="logo-name">
+          <span class="logo-text">Promo Tracker</span>
+          <span class="logo-version" id="sidebar-version">—</span>
+        </span>
       </div>
+      <button type="button" class="update-chip" id="update-chip" data-action="restart" hidden>⬆ Restart to update</button>
 
       <nav class="nav" aria-label="Sections">
         <a href="#overview" class="nav-item active" data-section="overview" aria-current="page">
@@ -579,6 +583,29 @@
               <div class="settings-desc">The version of Promo Tracker you're running.</div>
             </div>
             <div class="settings-control"><span class="about-value" id="about-version">—</span></div>
+          </div>
+          <div class="settings-divider"></div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label">Build</div>
+              <div class="settings-desc">The exact code the server is running (git commit and its date).</div>
+            </div>
+            <div class="settings-control"><span class="about-value" id="about-build">—</span></div>
+          </div>
+          <div class="settings-divider"></div>
+          <div class="settings-row">
+            <div class="settings-info">
+              <div class="settings-label">Running since</div>
+              <div class="settings-desc">When the server last started.</div>
+            </div>
+            <div class="settings-control"><span class="about-value" id="about-started">—</span></div>
+          </div>
+          <div class="settings-row about-update" id="about-update" hidden>
+            <div class="settings-info">
+              <div class="settings-label">Update waiting</div>
+              <div class="settings-desc" id="about-update-desc"></div>
+            </div>
+            <div class="settings-control"><button type="button" class="btn btn-primary btn-sm" data-action="restart">Restart now</button></div>
           </div>
           <div class="settings-divider"></div>
           <div class="settings-row">

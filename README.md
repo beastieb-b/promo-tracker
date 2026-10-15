@@ -212,7 +212,11 @@ How access works:
 | **Settings** | Login status for both sites (or, with Multiple accounts on, an **Accounts** list with each account's logins), code sources (both monthly threads plus the forum topic, each linked), the **System Health** self-test, scan and apply intervals, home region, and remote access. |
 
 The sidebar holds **Check Sources** and **Apply Codes** (run now) plus
-**Restart** and **Quit**. Sections have their own addresses (`#queue`,
+**Restart** and **Quit**. Under the logo is the version the server is running
+and its build (git commit), e.g. `v2.1.0 · c9ac9b0`; Settings → About adds the
+build date and when the server started. If newer code is on disk than what's
+running (say, after a `git pull`), a **Restart to update** button appears.
+`npm run version:show` prints the same from Terminal. Sections have their own addresses (`#queue`,
 `#results`, …), so Back/Forward and reload work. Banners appear only when you need to act: a login the app
 couldn't restore by itself, a self-test failure, a missed monthly thread, or a
 source that can't be read.

@@ -111,7 +111,6 @@ export function renderSettings() {
   }
   renderAccess();
 
-  setText('about-version', st?.appVersion ? `v${st.appVersion}` : state.meta?.version ? `v${state.meta.version}` : '—');
   if (st) setText('about-reset', formatDay(st.lastResetDate) || 'No reset yet');
 }
 

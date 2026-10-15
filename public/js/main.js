@@ -14,6 +14,7 @@ import { initLog } from './log.js';
 import { initSettings } from './settings.js';
 import { initAccounts } from './accounts.js';
 import { initEvents, startEvents, stopEvents } from './events.js';
+import { initVersion } from './version.js';
 import { copyText } from './util.js';
 
 const POLL_MS = 30000;
@@ -56,6 +57,7 @@ async function start() {
   initSettings();
   initAccounts();   // restores the stored account choice before anything loads
   initEvents();
+  initVersion();
   onAuthRequired(showAuthNotice);
 
   subscribe('section', section => {

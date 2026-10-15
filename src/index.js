@@ -15,6 +15,11 @@ const state = require('./state');
 
 const args = process.argv.slice(2);
 
+if (args.includes('--version')) {
+  process.stdout.write(`Promo Tracker ${require('./version').label()}\n`);
+  process.exit(0);
+}
+
 // ── Access links for other devices (no lock needed: reads config only) ──────
 if (args.includes('--access-link')) {
   const access = require('./access');
@@ -330,7 +335,7 @@ async function runDailyCheck(triesLeft = 10) {
 
 async function main() {
   const noSchedule = args.includes('--no-schedule'); // dashboard only (development)
-  console.log(`🍔 Promo Tracker starting${noSchedule ? ' (dashboard only — no scheduled runs)' : ''}...`);
+  console.log(`🍔 Promo Tracker ${require('./version').label()} starting${noSchedule ? ' (dashboard only — no scheduled runs)' : ''}...`);
 
   server.registerHooks({
     runScan, runApply, getScanStatus,

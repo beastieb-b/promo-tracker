@@ -10,6 +10,7 @@ const access = require('./access');
 const accounts = require('./accounts');
 const stores = require('./store');
 const stats = require('./stats');
+const version = require('./version');
 const { timeZoneName, monthStartMs } = require('./time');
 
 const app = express();
@@ -181,7 +182,8 @@ const broadcastAccounts = () => broadcast({ type: 'accounts_updated', accounts: 
 
 app.get('/api/meta', (req, res) => {
   res.json({
-    version: require('../package.json').version,
+    version: version.info().version,
+    build: version.info(),
     scanIntervals: settings.SCAN_INTERVALS,
     applyIntervals: settings.APPLY_INTERVALS,
     reapplySkipDays: cfg.REAPPLY_SKIP_DAYS,
@@ -222,6 +224,7 @@ app.get('/api/stats', (req, res) => {
     setup: settings.getSetupStatus(),
     scanStatus: hooks.getScanStatus(),
     healthWarning: state.getHealthWarning(),
+    server: version.info(),
   });
 });
 
