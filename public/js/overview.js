@@ -9,6 +9,7 @@ import { go, isVisible } from './router.js';
 import { loadStats, quiet } from './data.js';
 import * as live from './live.js';
 import { renderLoginButtons } from './accounts.js';
+import { isPaused, pauseInfo, untilLabel } from './pause.js';
 import { isMulti, accountList, accountTag, statsView, viewOf, rowKey, rowFocus } from './scope.js';
 import {
   $, escapeHtml as esc, cssToken, safeUrl, externalLink, timeAgo, formatDuration, untilText,
@@ -114,6 +115,21 @@ function renderScanStatus() {
     return;
   }
 
+  // Paused: say so even while the last run winds down.
+  if (isPaused()) {
+    const until = esc(untilLabel(pauseInfo().until));
+    if (s.applyRunning) {
+      set('applying', '<span class="spinner spinner-inline"></span>Pausing — finishing the current code…',
+        `<span class="scan-meta-item">Then nothing runs ${until}</span>`);
+    } else if (s.scanRunning) {
+      set('applying', '<span class="spinner spinner-inline"></span>Pausing — finishing the current scan…',
+        `<span class="scan-meta-item">Then nothing runs ${until}</span>`);
+    } else {
+      set('paused', '⏸ Paused', `<span class="scan-meta-item">No scans or code attempts ${until}</span>`);
+    }
+    return;
+  }
+
   // A run in progress takes priority — and survives page reloads, since it
   // comes from the server's scanStatus (stats poll or SSE).
   if (s.applyRunning) {
@@ -166,7 +182,8 @@ export function syncRunButtons() {
     const btn = $(run.btn);
     if (!btn) continue;
     const busy = Boolean(state.scanStatus?.[run.flag]) || state.starting[which];
-    btn.disabled = busy;
+    btn.disabled = busy || isPaused();
+    btn.title = isPaused() && !busy ? 'Paused — resume first' : '';
     btn.setAttribute('aria-busy', String(busy));
     setText(btn.querySelector('.btn-text'), busy ? run.busy : run.idle);
   }

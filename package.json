@@ -1,6 +1,6 @@
 {
   "name": "postmates-promo-tracker",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Finds Postmates / Uber Eats promo codes on Reddit and USCardForum and applies them to your account automatically (macOS, Chrome).",
   "private": true,
   "license": "MIT",
@@ -12,6 +12,8 @@
     "scan": "node src/index.js --reddit",
     "apply": "node src/index.js --apply",
     "access-link": "node src/index.js --access-link",
+    "pause": "node src/index.js --pause",
+    "resume": "node src/index.js --resume",
     "test": "node --test test/*.test.js",
     "lint": "eslint .",
     "install-service": "node src/install-service.js",

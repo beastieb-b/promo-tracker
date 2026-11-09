@@ -94,6 +94,11 @@ function handleEvent(d) {
       live.finish('reddit', d.error ? `Source scan failed: ${d.error}` : '✅ Source scan complete', d.error ? 'error' : 'success');
       break;
 
+    case 'pause_changed':
+      applyScanStatus(d.scanStatus);
+      refreshLogSoon();
+      break;
+
     case 'apply_started':
       applyScanStatus(d.scanStatus, { applyRunning: true });
       live.begin('apply', 'Code applier started…');
@@ -254,6 +259,13 @@ function applyFinished(d) {
     return;
   }
   const applied = Number(d.applied) || 0;
+  if (d.stoppedForPause) {
+    const msg = applied ? `Paused after ${plural(applied, 'code')} — the rest wait until you resume` : 'Paused — codes wait until you resume';
+    showToast(msg, 'info');
+    setLastRun('apply', '⏸ Paused');
+    live.finish('apply', msg, 'muted');
+    return;
+  }
   if (!applied) {
     // Nothing was tried — don't say "0 worked".
     showToast('Queue is empty — nothing to apply. Run "Check Sources" to find codes.');
@@ -280,7 +292,7 @@ const QUIT_MESSAGES = {
 };
 
 async function quitApp() {
-  if (!window.confirm('Stop Promo Tracker?\n\nScanning and applying codes stop until it is started again.')) return;
+  if (!window.confirm('Stop Promo Tracker?\n\nScanning and applying codes stop, and the dashboard goes offline until it is started again (npm run restart on the Mac).\n\nJust need it out of the way for a while? Cancel and use Pause instead — the dashboard keeps working.')) return;
   let res;
   try {
     res = await api('POST', '/api/quit');

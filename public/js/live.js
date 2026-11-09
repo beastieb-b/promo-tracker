@@ -127,6 +127,12 @@ export function applyProgress(d) {
       cls = 'waiting';
       break;
     }
+    case 'paused_stop': {
+      const n = Number(d.preserved) || 0;
+      msg = `⏸ Paused — ${plural(n, 'code')} left in the queue for when you resume`;
+      cls = 'waiting';
+      break;
+    }
     case 'waiting': msg = `   Waiting ${formatWait(d.waitMs) || 'a moment'} before the next code…`; cls = 'waiting'; break;
     case 'login_required': msg = `🔑 Login required${where} — open Settings to sign in`; cls = 'error'; break;
     case 'error': msg = `⚠️ ${code} — error${d.detail ? `: ${d.detail}` : ''}`; cls = 'error'; break;

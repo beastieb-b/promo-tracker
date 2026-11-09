@@ -25,6 +25,9 @@ const EVENT_LABELS = {
   apply_run_done: 'Apply done',
   apply_run_error: 'Apply error',
   apply_stopped_for_time: 'Apply stopped (time limit)',
+  apply_paused: 'Apply stopped (paused)',
+  paused: 'Paused',
+  resumed: 'Resumed',
   apply_on_arrival: 'Instant apply (new codes)',
   apply_on_arrival_skipped: 'Instant apply deferred',
   code_result: 'Code result',
@@ -59,7 +62,10 @@ export const eventLabel = type => EVENT_LABELS[type] || String(type || 'event');
 const REASON_LABELS = {
   no_pending_codes: 'no codes in queue — nothing to do',
   not_logged_in: 'login needed',
+  paused: 'paused — codes wait until you resume',
 };
+
+const RESUMED_HOW = { manual: 'by you', timer: 'pause time ended' };
 
 function formatLogDetail(entry) {
   const parts = [];
@@ -67,6 +73,9 @@ function formatLogDetail(entry) {
   if (isMulti() && (entry.accountName || typeof entry.account === 'string')) {
     parts.push(`account: ${accountName(entry.account, entry.accountName)}`);
   }
+  if (entry.type === 'paused') parts.push(entry.until ? `until ${formatDateTime(entry.until, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}` : 'until resumed');
+  if (entry.type === 'resumed') parts.push(RESUMED_HOW[entry.how] || entry.how || '');
+  if (entry.codes_preserved !== undefined && entry.type === 'apply_paused') parts.push(`${entry.codes_preserved} left in queue`);
   if (entry.source) parts.push(`source: ${entry.source}`);
   if (entry.thread_id) parts.push(`thread: ${entry.thread_id}`);
   if (entry.comments_scanned) parts.push(`${entry.comments_scanned} comments`);

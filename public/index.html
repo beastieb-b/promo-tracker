@@ -49,6 +49,10 @@
           <span aria-hidden="true">⚡</span> <span class="btn-text">Apply Codes</span>
         </button>
         <div class="last-run-label" id="last-apply-run"></div>
+        <button type="button" class="btn btn-pause" id="btn-pause" data-action="pause-open" aria-haspopup="dialog" disabled>
+          <span aria-hidden="true" class="pause-icon">⏸</span> <span class="btn-text">Pause</span>
+        </button>
+        <div class="last-run-label pause-label" id="pause-label"></div>
       </div>
 
       <div class="status-indicator">
@@ -82,6 +86,16 @@
         </div>
         <button type="button" class="health-banner-dismiss" data-action="dismiss-health"
                 title="Dismiss" aria-label="Dismiss warning">×</button>
+      </div>
+
+      <!-- Paused: nothing runs on its own until resumed (pause.js) -->
+      <div class="health-banner pause-banner" id="pause-banner" role="status" hidden>
+        <span class="health-banner-icon" aria-hidden="true">⏸</span>
+        <div class="health-banner-text">
+          <strong id="pause-banner-title">Paused</strong>
+          <span id="pause-banner-msg"></span>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" data-action="resume">▶ Resume</button>
       </div>
 
       <!-- Session-expired banners (apply can't work without a valid login) -->
@@ -629,6 +643,24 @@
       <p>On the Mac running Promo Tracker, open <strong>Settings → Remote access</strong> and copy the link (or run <code>npm run access-link</code>).</p>
     </div>
   </div>
+
+  <!-- Pause: how long (pause.js) -->
+  <dialog class="pause-dialog" id="pause-dialog" aria-labelledby="pause-dialog-title" aria-describedby="pause-dialog-desc">
+    <form method="dialog">
+      <h2 id="pause-dialog-title">Pause Promo Tracker</h2>
+      <p id="pause-dialog-desc">Holds source scans and code attempts so Chrome stays out of the way while you use this Mac for something else. A run in progress stops after its current code. The dashboard keeps working, and anything the pause skipped runs when you resume.</p>
+      <div class="pause-options">
+        <button type="button" class="btn btn-secondary" data-action="pause-for" data-minutes="30">30 minutes</button>
+        <button type="button" class="btn btn-secondary" data-action="pause-for" data-minutes="60">1 hour</button>
+        <button type="button" class="btn btn-secondary" data-action="pause-for" data-minutes="120">2 hours</button>
+        <button type="button" class="btn btn-secondary" data-action="pause-for" data-minutes="240">4 hours</button>
+        <button type="button" class="btn btn-secondary pause-option-wide" data-action="pause-for" data-minutes="">Until I resume</button>
+      </div>
+      <div class="pause-dialog-actions">
+        <button type="submit" class="btn btn-sm pause-cancel" value="cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
 
   <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
 </body>

@@ -2036,3 +2036,52 @@ a.meta-pill.source:hover { background: rgba(10, 132, 255, 0.28); }
 .update-chip[hidden] { display: none; }
 .about-update .settings-label { color: var(--warning); }
 @media (pointer: coarse) { .update-chip { min-height: 44px; } }
+
+/* ── Pause ───────────────────────────────────────────────────────────────── */
+
+.btn-pause {
+  background: transparent;
+  color: var(--label-2);
+  border: 1px solid var(--sep);
+}
+.btn-pause:hover:not(:disabled) { background: var(--bg-3); color: var(--label); }
+.btn-pause.is-paused {
+  background: var(--orange-fill);
+  color: var(--orange);
+  border-color: rgba(255, 159, 10, 0.45);
+}
+.btn-pause.is-paused:hover:not(:disabled) { filter: brightness(1.12); }
+.pause-label { color: var(--orange); }
+
+.scan-dot.paused { background: var(--orange); }
+
+/* Orange variant of the health banner */
+.pause-banner {
+  background: var(--orange-fill);
+  border-color: rgba(255, 159, 10, 0.35);
+}
+.pause-banner .health-banner-text strong { color: var(--orange); }
+
+.pause-dialog {
+  margin: auto; /* the global reset zeroes the browser's centering */
+  width: min(420px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--sep);
+  border-radius: var(--radius-lg);
+  background: var(--bg-2);
+  color: var(--label);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.pause-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.pause-dialog h2 { font-size: 17px; margin: 0 0 8px; }
+.pause-dialog p { font-size: 13px; line-height: 1.5; color: var(--label-2); margin: 0 0 16px; }
+.pause-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.pause-option-wide { grid-column: 1 / -1; }
+.pause-dialog-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+.pause-cancel { background: none; color: var(--label-3); }
+.pause-cancel:hover { color: var(--label); }
+@media (pointer: coarse) { .pause-options .btn { min-height: 44px; } }

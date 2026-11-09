@@ -11,6 +11,7 @@ const accounts = require('./accounts');
 const stores = require('./store');
 const stats = require('./stats');
 const version = require('./version');
+const pause = require('./pause');
 const { timeZoneName, monthStartMs } = require('./time');
 
 const app = express();
@@ -127,6 +128,8 @@ let hooks = {
   isApplyRunning: () => false,
   reschedule: null,
   getScanStatus: () => null,
+  pause: null,         // (minutes|null) => pause status
+  resume: null,        // () => { resumed }
   shutdown: async () => {},
 };
 
@@ -274,9 +277,35 @@ app.delete('/api/health-warning', (req, res) => {
 });
 
 const busy = (res, error) => res.status(409).json({ error, busy: true });
+const pausedNow = (res) => {
+  if (!pause.isPaused()) return false;
+  res.status(409).json({ error: 'Promo Tracker is paused — resume it first', busy: true, paused: true });
+  return true;
+};
+
+// ── Pause ────────────────────────────────────────────────────────────────────
+// { minutes: n } pauses for n minutes; { minutes: null } (or no body) until resumed.
+
+app.post('/api/pause', (req, res) => {
+  if (!hooks.pause) return res.status(503).json({ error: 'Not ready yet' });
+  const raw = (req.body || {}).minutes;
+  const minutes = raw === undefined ? null : raw;
+  if (minutes !== null && typeof minutes !== 'number') return res.status(400).json({ error: 'minutes must be a number or null' });
+  const error = pause.validateMinutes(minutes);
+  if (error) return res.status(400).json({ error });
+  const st = hooks.pause(minutes);
+  res.json({ ...st, scanStatus: hooks.getScanStatus() });
+});
+
+app.post('/api/resume', (req, res) => {
+  if (!hooks.resume) return res.status(503).json({ error: 'Not ready yet' });
+  const r = hooks.resume('manual');
+  res.json({ ...r, scanStatus: hooks.getScanStatus() });
+});
 
 app.post('/api/run/reddit', (req, res) => {
   if (!hooks.runScan) return res.status(503).json({ error: 'Not ready yet' });
+  if (pausedNow(res)) return;
   if (hooks.isScanRunning()) return busy(res, 'A source scan is already running');
   res.status(202).json({ started: true });
   hooks.runScan().catch(err => broadcast({ type: 'error', message: err.message }));
@@ -284,6 +313,7 @@ app.post('/api/run/reddit', (req, res) => {
 
 app.post('/api/run/apply', (req, res) => {
   if (!hooks.runApply) return res.status(503).json({ error: 'Not ready yet' });
+  if (pausedNow(res)) return;
   if (hooks.isApplyRunning()) return busy(res, 'An apply run is already running');
   if (browser.isBusy()) return busy(res, `The browser is busy (${browser.holder()}) — try again in a moment`);
   res.status(202).json({ started: true });
@@ -291,6 +321,7 @@ app.post('/api/run/apply', (req, res) => {
 });
 
 app.post('/api/self-test', (req, res) => {
+  if (pausedNow(res)) return;
   if (browser.isBusy()) return busy(res, `The browser is busy (${browser.holder()}) — try again in a moment`);
   res.status(202).json({ started: true });
   const { testDetection } = require('./runner');

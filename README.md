@@ -211,8 +211,8 @@ How access works:
 | **Activity Log** | The raw event log: scans, applies, sign-ins, skips, errors. |
 | **Settings** | Login status for both sites (or, with Multiple accounts on, an **Accounts** list with each account's logins), code sources (both monthly threads plus the forum topic, each linked), the **System Health** self-test, scan and apply intervals, home region, and remote access. |
 
-The sidebar holds **Check Sources** and **Apply Codes** (run now) plus
-**Restart** and **Quit**. Under the logo is the version the server is running
+The sidebar holds **Check Sources** and **Apply Codes** (run now), **Pause**
+(see below), plus **Restart** and **Quit**. Under the logo is the version the server is running
 and its build (git commit), e.g. `v2.1.0 · c9ac9b0`; Settings → About adds the
 build date and when the server started. If newer code is on disk than what's
 running (say, after a `git pull`), a **Restart to update** button appears.
@@ -220,6 +220,29 @@ running (say, after a `git pull`), a **Restart to update** button appears.
 `#results`, …), so Back/Forward and reload work. Banners appear only when you need to act: a login the app
 couldn't restore by itself, a self-test failure, a missed monthly thread, or a
 source that can't be read.
+
+### Pausing
+
+Running something else on this Mac that shouldn't share it with a Chrome window
+opening on its own? Press **Pause** in the sidebar and pick how long: 30 minutes,
+1, 2 or 4 hours, or until you resume. While paused, no scans, apply runs or
+daily checks start, and Chrome stays closed. An apply run already going stops
+before its next code (the code being tried finishes first; the rest stay
+queued), and a scan already going finishes. The dashboard keeps working, and a
+banner shows when it resumes. When the pause ends, or you press **Resume**, the
+app catches up on whatever the pause skipped: a scan, then the queued codes.
+Logging in from the dashboard still works while paused.
+
+Pausing survives a restart. From Terminal or another script:
+
+```bash
+npm run pause            # until you resume
+npm run pause -- 2h      # or 30m, 90m, 1d (up to 7 days)
+npm run resume
+```
+
+Unlike **Quit**, Pause leaves the dashboard up, so you can resume from your
+phone too.
 
 ---
 
@@ -277,6 +300,7 @@ table (mark region-locked, or count it back).
 | `npm run scan` | Run a one-off source scan. |
 | `npm run apply` | Run a one-off apply pass. |
 | `npm run access-link` | Print the links that let other devices open the dashboard. |
+| `npm run pause` / `resume` | Pause automatic runs (`npm run pause -- 2h` for a set time) / resume them. |
 | `npm run install-service` / `uninstall-service` | Install or remove the `launchd` agent. |
 | `npm run restart` | Reload the background service. |
 | `npm test` / `npm run lint` | Unit tests (`node --test`) / ESLint. |
@@ -330,6 +354,7 @@ All state lives in `data/` (gitignored). Full-file writes are **atomic**
 | `session_state.json` | Whether each login was last confirmed working. |
 | `settings.json` | Intervals and home region. |
 | `heartbeat.json` | Last successful scan/apply (for the staleness warning and apply guards). |
+| `pause.json` | Present while paused: when the pause started and when it ends. |
 | `health.json` | The active warning banner, if any. |
 | `access_token` | Secret behind the access link (only used with network access on). |
 | `daemon.lock` | Which process is running, so a second copy refuses to start. |
@@ -377,6 +402,7 @@ node src/index.js --no-schedule   # dashboard only: no scans or applies
 | `src/config.js` | Paths, limits, timings, and `config.local.json`. |
 | `src/time.js` | Local-calendar helpers. |
 | `src/lock.js` | One running copy at a time. |
+| `src/pause.js` | Pause state (saved to disk) and the sleep that ends when you pause. |
 | `public/` | The dashboard (plain ES modules, no build step). |
 
 ---

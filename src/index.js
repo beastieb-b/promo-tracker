@@ -35,6 +35,56 @@ if (args.includes('--access-link')) {
 
 state.ensureDirs();
 
+// ── Pause / resume from a terminal or another script ────────────────────────
+// npm run pause [-- 30m | 2h | 1d]   ·   npm run resume
+// Talks to the running app; if it isn't running, sets how it will start.
+if (args.includes('--pause') || args.includes('--resume')) {
+  const out = (line) => process.stdout.write(line + '\n');
+  const resume = args.includes('--resume');
+  let minutes = null;
+  const arg = resume ? null : args[args.indexOf('--pause') + 1];
+  if (arg && !arg.startsWith('--')) {
+    const m = /^(\d+)\s*(m|min|mins|h|hr|hrs|d)?$/i.exec(arg);
+    minutes = m ? Number(m[1]) * ({ h: 60, hr: 60, hrs: 60, d: 1440 }[(m[2] || 'm').toLowerCase()] || 1) : NaN;
+  }
+  const pause = require('./pause');
+  const bad = resume ? null : Number.isNaN(minutes) ? `Didn't understand "${arg}".` : pause.validateMinutes(minutes);
+  if (bad) {
+    out(`${bad}\nUsage: npm run pause [-- 30m | 2h | 1d]   (no length = until you run npm run resume)`);
+    process.exit(1);
+  }
+  const when = (iso) => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  const say = (st) => out(resume
+    ? (st.resumed === false ? '▶️  Wasn\'t paused — running normally' : '▶️  Resumed')
+    : `⏸  Paused ${st.until ? `until ${when(st.until)}` : 'until you resume it (npm run resume, or Resume on the dashboard)'}`);
+  const host = ['0.0.0.0', '::'].includes(cfg.DASHBOARD_HOST) ? '127.0.0.1' : cfg.DASHBOARD_HOST;
+  (async () => {
+    let res;
+    try {
+      res = await fetch(`http://${host.includes(':') ? `[${host}]` : host}:${cfg.DASHBOARD_PORT}/api/${resume ? 'resume' : 'pause'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Promo-Client': 'dashboard' },
+        body: JSON.stringify(resume ? {} : { minutes }),
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch (err) {
+      if (err.cause?.code !== 'ECONNREFUSED') {
+        out(`Couldn't reach Promo Tracker on port ${cfg.DASHBOARD_PORT}: ${err.cause?.code || err.message}`);
+        process.exit(1);
+      }
+      // Not running: change how it will start.
+      out(`Promo Tracker isn't running — ${resume ? 'it will start unpaused.' : 'it will start paused.'}`);
+      say(resume ? { resumed: pause.resume().wasPaused } : pause.pause({ minutes }));
+      process.exit(0);
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { out(`Couldn't ${resume ? 'resume' : 'pause'}: ${body.error || res.status}`); process.exit(1); }
+    say(body);
+    process.exit(0);
+  })();
+  return;
+}
+
 // One process at a time drives the Chrome profile and the state files.
 const role = args.includes('--setup') ? 'setup' : args.includes('--reddit') ? 'scan'
   : args.includes('--apply') ? 'apply' : 'daemon';
@@ -86,6 +136,7 @@ const reddit = require('./reddit');
 const reads = require('./reads');
 const runner = require('./runner');
 const login = require('./login');
+const pause = require('./pause');
 const server = require('./server');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -96,6 +147,9 @@ let lastRateLimitedAt = null; // when an apply run last hit the rate limiter
 // When an apply run last ACTUALLY attempted codes (not the no-op "queue is
 // empty" cron wake-ups) — the apply-on-arrival gap is measured from it.
 let lastCodeApplyAt = null;
+// What a pause skipped, so resuming can catch up on exactly that.
+const missed = { scan: false, apply: false, daily: false };
+let resumeTimer = null;
 
 const scanStatus = {
   active: false,          // set once crons are scheduled
@@ -114,7 +168,7 @@ const scanStatus = {
 };
 
 function getScanStatus() {
-  return { ...scanStatus, browserBusy: browser.holder() };
+  return { ...scanStatus, browserBusy: browser.holder(), pause: pause.status() };
 }
 
 function updateNextRunTimes() {
@@ -139,6 +193,11 @@ async function guardRun(promise, ms, label, onDeadline, settleMs = 20000) {
 }
 
 async function runScan() {
+  if (pause.isPaused()) {
+    missed.scan = true;
+    console.log('Source scan skipped — paused');
+    return { paused: true };
+  }
   if (running.scan) return { error: 'A source scan is already running', busy: true };
   running.scan = true;
   Object.assign(scanStatus, { scanRunning: true, scanStartedAt: new Date(), lastScanError: null });
@@ -178,6 +237,8 @@ async function runScan() {
     if (result.queued > 0) console.log(`  Queued: ${result.queued} codes`);
     maybeApplyOnArrival(result.queued);
   }
+  // Paused mid-scan: the scan finished, and nothing else may use Chrome now.
+  if (pause.isPaused() && !running.apply) await browser.recycleIfIdle().catch(() => {});
   server.broadcast({ type: 'reddit_done', ...result, scanStatus: getScanStatus() });
   return result;
 }
@@ -189,6 +250,11 @@ async function runScan() {
 // Both times survive restarts via the heartbeat file.
 function maybeApplyOnArrival(queued) {
   if (!(queued > 0)) return;
+  if (pause.isPaused()) {
+    missed.apply = true;
+    state.appendLog({ type: 'apply_on_arrival_skipped', queued, note: 'paused — codes wait until you resume' });
+    return;
+  }
   const hb = state.getHeartbeat();
   if (running.apply || browser.isBusy()) {
     state.appendLog({ type: 'apply_on_arrival_skipped', queued, note: `browser busy (${browser.holder() || 'apply run'}) — codes wait for the next scheduled run` });
@@ -207,6 +273,11 @@ function maybeApplyOnArrival(queued) {
 }
 
 async function runApply() {
+  if (pause.isPaused()) {
+    missed.apply = true;
+    console.log('Code applier skipped — paused');
+    return { paused: true };
+  }
   if (running.apply) return { error: 'An apply run is already running', busy: true };
   running.apply = true;
   Object.assign(scanStatus, { applyRunning: true, applyStartedAt: new Date(), applyCurrentCode: null });
@@ -248,6 +319,11 @@ async function runApply() {
     lastCodeApplyAt = new Date();
     state.recordHeartbeat('codeApply');
   }
+  if (result.stoppedForPause) {
+    missed.apply = true; // the rest of the queue goes when you resume
+    console.log('  ⏸  Stopped — paused');
+  }
+  if (pause.isPaused() && !running.scan) await browser.recycleIfIdle().catch(() => {});
   server.broadcast({ type: 'apply_done', ...result, scanStatus: getScanStatus() });
   return result;
 }
@@ -304,6 +380,11 @@ function runMaintenance(reason) {
 // login between sporadic fallbacks). If a run holds the browser, retry every
 // few minutes for up to half an hour rather than skipping the day.
 async function runDailyCheck(triesLeft = 10) {
+  if (pause.isPaused()) {
+    missed.daily = true;
+    console.log('Daily check postponed — paused (runs when you resume)');
+    return;
+  }
   if (running.scan || running.apply || browser.isBusy()) {
     if (triesLeft > 0) { setTimeout(() => runDailyCheck(triesLeft - 1), 3 * 60000); return; }
     console.log('Daily check skipped — the browser stayed busy for 30 minutes (will run tomorrow)');
@@ -333,12 +414,79 @@ async function runDailyCheck(triesLeft = 10) {
   }
 }
 
+// ── Pause / resume ───────────────────────────────────────────────────────────
+// Pausing holds every automatic job; a running apply stops before its next
+// code and a running scan finishes, and Chrome closes once nothing needs it
+// (a login window you opened stays). Resuming catches up on whatever the
+// pause skipped.
+
+function broadcastPause() {
+  server.broadcast({ type: 'pause_changed', scanStatus: getScanStatus() });
+}
+
+function armResumeTimer() {
+  clearTimeout(resumeTimer);
+  resumeTimer = null;
+  const st = pause.status();
+  if (st.paused && st.until) {
+    resumeTimer = setTimeout(() => resumeNow('timer'), Math.max(0, Date.parse(st.until) - Date.now()));
+  }
+}
+
+function pauseNow(minutes = null) {
+  const st = pause.pause({ minutes });
+  armResumeTimer();
+  state.appendLog({ type: 'paused', until: st.until });
+  console.log(`⏸  Paused ${st.until ? `until ${new Date(st.until).toLocaleString()}` : 'until resumed'}`);
+  broadcastPause();
+  if (!running.scan && !running.apply) browser.recycleIfIdle().catch(() => {});
+  return st;
+}
+
+function resumeNow(how = 'manual') {
+  clearTimeout(resumeTimer);
+  resumeTimer = null;
+  const { wasPaused } = pause.resume();
+  // The timer fires once the end time has passed, when status already reads "not paused".
+  if (!wasPaused && how !== 'timer') return { resumed: false };
+  const catchingUp = missed.scan || missed.apply || missed.daily;
+  state.appendLog({ type: 'resumed', how });
+  console.log(how === 'timer' ? '▶️  Pause ended — resuming' : '▶️  Resumed');
+  broadcastPause();
+  catchUp().catch(err => console.error('Catch-up after pause failed:', err.message));
+  return { resumed: true, catchingUp };
+}
+
+async function catchUp() {
+  const m = { ...missed };
+  missed.scan = missed.apply = missed.daily = false;
+  if (m.scan) await runScan();
+  const queued = require('./store').active().some(st => st.getQueue().length > 0);
+  if (m.apply && queued) {
+    // Same spacing as inside a run (a run paused mid-way may have just tried
+    // a code), and no extra run while a recent rate limit is cooling off.
+    const hb = state.getHeartbeat();
+    const lastTry = new Date(lastCodeApplyAt || hb.codeApply || 0).getTime();
+    const lastLimit = new Date(lastRateLimitedAt || hb.ratelimited || 0).getTime();
+    if (Date.now() - lastLimit < cfg.RATE_LIMIT_BACKOFF_MS) {
+      console.log('  Skipping the catch-up apply run — rate limited recently; the schedule picks the codes up');
+    } else {
+      const wait = lastTry + cfg.CODE_WAIT_MS - Date.now();
+      if (wait > 0) await sleep(wait);
+      if (!pause.isPaused()) await runApply();
+    }
+  }
+  if (m.daily && !pause.isPaused()) await runDailyCheck();
+}
+
 async function main() {
   const noSchedule = args.includes('--no-schedule'); // dashboard only (development)
   console.log(`🍔 Promo Tracker ${require('./version').label()} starting${noSchedule ? ' (dashboard only — no scheduled runs)' : ''}...`);
 
   server.registerHooks({
     runScan, runApply, getScanStatus,
+    pause: pauseNow,
+    resume: resumeNow,
     // Dashboard-only mode never schedules anything, even after a settings change.
     reschedule: noSchedule ? (s) => server.broadcast({ type: 'settings_updated', settings: s, scanStatus: getScanStatus() }) : reschedule,
     isScanRunning: () => running.scan,
@@ -355,6 +503,11 @@ async function main() {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM')); // launchd unload sends SIGTERM
+
+  // A pause whose end time passed while the app was off is over.
+  if (!pause.status().paused) pause.resume();
+  else console.log(`⏸  Starting paused ${pause.status().until ? `until ${new Date(pause.status().until).toLocaleString()}` : '(until resumed)'} — nothing runs until then`);
+  armResumeTimer();
 
   if (noSchedule) return;
 

@@ -4,9 +4,8 @@ const cfg = require('./config');
 const state = require('./state');
 const browser = require('./browser');
 const promo = require('./promo');
+const pause = require('./pause');
 const { requeuePendingUberEats } = require('./login');
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ── Apply run ────────────────────────────────────────────────────────────────
 // For each account in turn (one Chrome profile at a time): try up to maxCodes
@@ -15,7 +14,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // never sees requests faster than with one account. A code Postmates rejects
 // for any reason except "Code expired" is retried on Uber Eats. A rate limit
 // stops the whole run; a logged-out account stops that account's turn;
-// transient errors leave the code queued.
+// transient errors leave the code queued. Pausing the app stops the run
+// before its next code (the gap between codes ends at once); the code being
+// tried finishes first, and everything not yet tried stays queued.
 //
 // `stores` defaults to the active accounts; `deps` swaps out the browser for tests.
 async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, stores, deps = {} } = {}) {
@@ -28,7 +29,8 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, sto
     applyCode: promo.applyCode,
     withDeadline: browser.withDeadline,
     screenshot: browser.saveDebugScreenshot,
-    sleep,
+    sleep: pause.sleepUnlessPaused,
+    paused: pause.isPaused,
     now: Date.now,
     attemptMs: cfg.CODE_ATTEMPT_MS,
     waitMs: cfg.CODE_WAIT_MS,
@@ -48,6 +50,7 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, sto
   const results = [];
   let rateLimited = false;
   let stoppedForTime = false;
+  let stoppedForPause = false;
   let waitBeforeNext = false; // a code was attempted since the last gap
 
   // One account's turn.
@@ -90,6 +93,11 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, sto
       progress({ code: pending[0], status: 'waiting', waitMs: d.waitMs });
       await d.sleep(d.waitMs);
     }
+    if (d.paused()) {
+      stoppedForPause = true;
+      log({ type: 'apply_paused', code: pending[0], codes_preserved: pending.length });
+      return;
+    }
     if (page) { await d.closePage(page); page = null; }
     page = await d.getPage(acct.paths.profile);
     let ueGaveUp = false; // Uber Eats failed this turn even after pressing Log in
@@ -97,6 +105,13 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, sto
     for (let i = 0; i < pending.length; i++) {
       const code = pending[i];
       const isLast = i === pending.length - 1;
+
+      if (d.paused()) {
+        stoppedForPause = true;
+        log({ type: 'apply_paused', code, codes_preserved: pending.length - i });
+        progress({ code, status: 'paused_stop', preserved: pending.length - i });
+        return;
+      }
 
       // Never start a code that might not finish inside the run's budget —
       // the outer deadline would cut it off mid-attempt. It stays queued.
@@ -234,16 +249,20 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, sto
 
   try {
     for (const s of stores) {
-      if (rateLimited || stoppedForTime) break;
+      if (rateLimited || stoppedForTime || stoppedForPause) break;
       await runAccount(s);
     }
     if (!results.length) {
+      if (stoppedForPause) {
+        state.appendLog({ type: 'apply_run_done', reason: 'paused' });
+        return { applied: 0, results: [], stoppedForPause, reason: 'Paused' };
+      }
       state.appendLog({ type: 'apply_run_done', reason: 'no_pending_codes' });
       return { applied: 0, results: [], reason: 'No codes in queue' };
     }
 
     const successes = results.filter(r => r.result === 'success').length;
-    state.appendLog({ type: 'apply_run_done', applied: results.length, successes, rateLimited, stoppedForTime });
+    state.appendLog({ type: 'apply_run_done', applied: results.length, successes, rateLimited, stoppedForTime, stoppedForPause });
 
     // Every attempt came back unknown/error → the site's UI has probably
     // changed. Say so loudly instead of failing silently for days.
@@ -253,7 +272,7 @@ async function runApplyCodes({ maxCodes = cfg.MAX_CODES_PER_RUN, onProgress, sto
       state.setHealthWarning('All codes returned unknown/error on the last run — the Postmates UI may have changed. Run the self-test in Settings → System Health.');
     }
 
-    return { applied: results.length, results, rateLimited, stoppedForTime, detectionWarning: broken };
+    return { applied: results.length, results, rateLimited, stoppedForTime, stoppedForPause, detectionWarning: broken };
   } catch (err) {
     state.appendLog({ type: 'apply_run_error', error: err.message });
     return { error: `Apply run failed: ${err.message}` };
